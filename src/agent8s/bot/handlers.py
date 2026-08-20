@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from aiogram import Router
 from aiogram.filters import Command, CommandObject
 from aiogram.types import BufferedInputFile, Message
 
-from .. import git_ops
+from .. import git_ops, scaffold
 from ..agents import AGENT_NAMES, build_agent
 from ..config import Config
 from ..db import Database, Task
@@ -14,13 +15,15 @@ from ..db import Database, Task
 router = Router()
 
 TELEGRAM_TEXT_LIMIT = 4000  # leave headroom below Telegram's 4096 hard cap
+PROJECT_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]*$")
 
 
 async def cmd_start(message: Message) -> None:
     await message.answer(
         "agent8s — headless coding agents over Telegram.\n\n"
         "/projects — list registered projects\n"
-        "/add_project <name> <absolute_path> [branch] — register a repo\n"
+        "/add_project <name> <absolute_path> [branch] — register an existing repo\n"
+        "/new <name> <description> — scaffold a brand-new repo and register it\n"
         "/use <name> — pick the active project for this chat\n"
         "/agents — list agents, /agent <name> — switch (claude/codex)\n"
         "/status — current project, agent, active task\n"
@@ -64,6 +67,45 @@ async def cmd_add_project(message: Message, command: CommandObject, db: Database
     branch = parts[2] if len(parts) > 2 else git_ops.default_branch(path)
     db.add_project(name, str(path), branch)
     await message.answer(f"Registered '{name}' → {path} (default branch: {branch})")
+
+
+async def cmd_new(message: Message, command: CommandObject, db: Database, config: Config) -> None:
+    if not command.args or " " not in command.args:
+        await message.answer("Usage: /new <name> <description>")
+        return
+    name, description = command.args.split(" ", 1)
+    name = name.strip()
+    description = description.strip()
+
+    if not PROJECT_NAME_RE.match(name):
+        await message.answer("Project name must start with a letter/digit and contain only letters, digits, - or _.")
+        return
+    if db.get_project_by_name(name) is not None:
+        await message.answer(f"A project named '{name}' already exists.")
+        return
+
+    path = config.projects_dir / name
+    if path.exists():
+        await message.answer(f"{path} already exists — pick another name or /add_project it directly.")
+        return
+
+    branch = "main"
+    try:
+        path.mkdir(parents=True)
+        scaffold.write_skeleton(path, name, description)
+        git_ops.init_repo(path, branch)
+        git_ops.commit_all(path, "Initial scaffold")
+    except (OSError, git_ops.GitError) as e:
+        await message.answer(f"Failed to scaffold {path}: {e}")
+        return
+
+    project = db.add_project(name, str(path), branch)
+    db.set_current_project(message.chat.id, project.id)
+    await message.answer(
+        f"Created and registered '{name}' → {path}\n"
+        f"README.md + CLAUDE.md scaffolded, first commit made, set as active project.\n"
+        f"Send a message to give it its first real task."
+    )
 
 
 async def cmd_use(message: Message, command: CommandObject, db: Database) -> None:
@@ -255,6 +297,7 @@ def register_handlers() -> Router:
     router.message.register(cmd_start, Command("start", "help"))
     router.message.register(cmd_projects, Command("projects"))
     router.message.register(cmd_add_project, Command("add_project"))
+    router.message.register(cmd_new, Command("new"))
     router.message.register(cmd_use, Command("use"))
     router.message.register(cmd_agents, Command("agents"))
     router.message.register(cmd_agent, Command("agent"))

@@ -22,6 +22,10 @@ def _run(args: list[str], cwd: Path) -> str:
     return result.stdout
 
 
+def init_repo(path: Path, branch: str) -> None:
+    _run(["init", "-b", branch], path)
+
+
 def default_branch(project_path: Path) -> str:
     try:
         out = _run(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], project_path)

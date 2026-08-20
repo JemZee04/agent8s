@@ -15,6 +15,7 @@ class Config:
     allowed_chat_ids: set[int]
     data_dir: Path
     worktree_dir: Path
+    projects_dir: Path
     default_agent: str
     claude_allowed_tools: list[str] = field(default_factory=list)
     claude_permission_mode: str = "acceptEdits"
@@ -41,6 +42,7 @@ def load_config() -> Config:
 
     data_dir = Path(os.environ.get("AGENT8S_DATA_DIR", "./data")).resolve()
     worktree_dir = Path(os.environ.get("AGENT8S_WORKTREE_DIR", "./worktrees")).resolve()
+    projects_dir = Path(os.environ.get("AGENT8S_PROJECTS_DIR", "~/Documents")).expanduser().resolve()
     data_dir.mkdir(parents=True, exist_ok=True)
     worktree_dir.mkdir(parents=True, exist_ok=True)
 
@@ -49,6 +51,7 @@ def load_config() -> Config:
         allowed_chat_ids=allowed_chat_ids,
         data_dir=data_dir,
         worktree_dir=worktree_dir,
+        projects_dir=projects_dir,
         default_agent=os.environ.get("AGENT8S_DEFAULT_AGENT", "claude").strip(),
         claude_allowed_tools=_split_csv(os.environ.get("AGENT8S_CLAUDE_ALLOWED_TOOLS", "Bash,Edit,Write,Read,Grep,Glob")),
         claude_permission_mode=os.environ.get("AGENT8S_CLAUDE_PERMISSION_MODE", "acceptEdits").strip(),

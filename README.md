@@ -9,9 +9,10 @@ model's context.
 Telegram ── aiogram bot ── SQLite (projects, tasks, session_id) ── git worktree ── claude -p / codex exec
 ```
 
-This is the Этап 0+1 (MVP) slice: register projects, run tasks in worktrees,
-inspect diffs, approve (merge) or drop them, and switch between agents. No
-Jira/Confluence/calendar integration yet, no push/deploy — merges stay local.
+This is the Этап 0+1+2 slice: register or scaffold projects, run tasks in
+worktrees, inspect diffs, approve (merge) or drop them, and switch between
+agents. No Jira/Confluence/calendar integration yet, no push/deploy — merges
+stay local.
 
 ## Setup
 
@@ -52,6 +53,19 @@ expose. Stop with Ctrl-C.
 /agent claude              # or: codex
 add a health check endpoint returning {"status": "ok"}
 ```
+
+or start from nothing:
+
+```
+/new invoice-svc a small service that generates PDF invoices
+```
+
+`/new <name> <description>` creates `$AGENT8S_PROJECTS_DIR/<name>` (default
+`~/Documents/<name>`), `git init`s it, writes a `README.md` and a `CLAUDE.md`
+seeded with the name/description (stack and commands left as TBD for the
+first real task to fill in), makes the initial commit, registers it, and
+sets it as the chat's active project. No external credentials needed — it's
+purely local scaffolding.
 
 Free text with no active task starts a new one: creates
 `agent8s/task-<id>` as a branch + worktree, and runs the selected agent's
@@ -98,7 +112,7 @@ the `ALLOWED_CHAT_IDS` whitelist:
 
 ## Roadmap
 
-Later stages from the original plan (not implemented yet): `/new` project
-scaffolding, Atlassian MCP (Jira/Confluence context pulled into tasks),
-Yandex Calendar reminders via CalDAV + cron (deliberately kept LLM-free), and
-streamed progress (`stream-json`) with multiple concurrent worktrees.
+Later stages from the original plan (not implemented yet): Atlassian MCP
+(Jira/Confluence context pulled into tasks), Yandex Calendar reminders via
+CalDAV + cron (deliberately kept LLM-free), and streamed progress
+(`stream-json`) with multiple concurrent worktrees.
