@@ -27,6 +27,11 @@ class Config:
     confluence_url: Optional[str] = None
     confluence_token: Optional[str] = None
     confluence_verify_ssl: bool = True
+    caldav_url: Optional[str] = None
+    caldav_login: Optional[str] = None
+    caldav_password: Optional[str] = None
+    reminder_lead_minutes: int = 15
+    reminder_poll_seconds: int = 300
 
     @property
     def db_path(self) -> Path:
@@ -35,6 +40,10 @@ class Config:
     @property
     def jira_configured(self) -> bool:
         return bool(self.jira_url and self.jira_token)
+
+    @property
+    def caldav_configured(self) -> bool:
+        return bool(self.caldav_url and self.caldav_login and self.caldav_password)
 
 
 def _split_csv(value: str) -> list[str]:
@@ -80,4 +89,9 @@ def load_config() -> Config:
         confluence_url=os.environ.get("CONFLUENCE_URL", "").strip() or None,
         confluence_token=os.environ.get("CONFLUENCE_PERSONAL_TOKEN", "").strip() or None,
         confluence_verify_ssl=_bool_env("CONFLUENCE_SSL_VERIFY", True),
+        caldav_url=os.environ.get("YANDEX_CALDAV_URL", "").strip() or None,
+        caldav_login=os.environ.get("YANDEX_CALDAV_LOGIN", "").strip() or None,
+        caldav_password=os.environ.get("YANDEX_CALDAV_PASSWORD", "").strip() or None,
+        reminder_lead_minutes=int(os.environ.get("AGENT8S_REMINDER_LEAD_MINUTES", "15")),
+        reminder_poll_seconds=int(os.environ.get("AGENT8S_REMINDER_POLL_SECONDS", "300")),
     )

@@ -36,6 +36,13 @@ CREATE TABLE IF NOT EXISTS chat_state (
     current_agent TEXT NOT NULL DEFAULT 'claude',
     active_task_id INTEGER REFERENCES tasks(id)
 );
+
+CREATE TABLE IF NOT EXISTS sent_reminders (
+    event_uid TEXT NOT NULL,
+    event_start TEXT NOT NULL,
+    sent_at TEXT NOT NULL,
+    PRIMARY KEY (event_uid, event_start)
+);
 """
 
 
@@ -190,6 +197,22 @@ class Database:
     def update_task_session(self, task_id: int, session_id: str) -> None:
         with self._connect() as conn:
             conn.execute("UPDATE tasks SET session_id = ?, updated_at = ? WHERE id = ?", (session_id, now(), task_id))
+
+    # -- reminders --
+
+    def was_reminded(self, event_uid: str, event_start: str) -> bool:
+        with self._connect() as conn:
+            r = conn.execute(
+                "SELECT 1 FROM sent_reminders WHERE event_uid = ? AND event_start = ?", (event_uid, event_start)
+            ).fetchone()
+            return r is not None
+
+    def mark_reminded(self, event_uid: str, event_start: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO sent_reminders (event_uid, event_start, sent_at) VALUES (?, ?, ?)",
+                (event_uid, event_start, now()),
+            )
 
     @staticmethod
     def _row_to_task(r: sqlite3.Row) -> Task:

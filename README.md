@@ -9,10 +9,10 @@ model's context.
 Telegram ── aiogram bot ── SQLite (projects, tasks, session_id) ── git worktree ── claude -p / codex exec
 ```
 
-This is the Этап 0+1+2+3 slice: register or scaffold projects, run tasks in
-worktrees, inspect diffs, approve (merge) or drop them, switch between
-agents, and pull Jira context straight into a task. No calendar integration
-yet, no push/deploy — merges stay local.
+This is the Этап 0+1+2+3+4 slice: register or scaffold projects, run tasks
+in worktrees, inspect diffs, approve (merge) or drop them, switch between
+agents, pull Jira context straight into a task, and get calendar reminders.
+No push/deploy — merges stay local.
 
 ## Setup
 
@@ -117,6 +117,35 @@ Wiring an actual Atlassian MCP server into the agent (so it can search
 Confluence beyond what's directly linked) is a possible later upgrade, not
 done here.
 
+## Calendar
+
+```
+/today
+```
+
+Set `YANDEX_CALDAV_URL` / `YANDEX_CALDAV_LOGIN` / `YANDEX_CALDAV_PASSWORD` in
+`.env` — the URL is Calendar → Settings → Export in the Yandex web UI, and
+the password is an *app password* (id.yandex.ru → Security → App passwords),
+not your normal account password. For a corporate Yandex 360 domain, IMAP/
+CalDAV protocol access may need to be turned on by the domain admin before an
+app password will actually authenticate — a `401` right after creating one
+usually means that, not a typo. `scripts/check_caldav.py` does a bare auth
+check against the configured URL without pulling in the full bot, useful
+while waiting for that to take effect.
+
+- `/today` — lists today's events (time, title, location) from the
+  configured calendar.
+- Reminders run as a background loop inside the same bot process (not a
+  separate cron job — simpler to run manually, still fully LLM-free): every
+  `AGENT8S_REMINDER_POLL_SECONDS` (default 300) it checks for events starting
+  within `AGENT8S_REMINDER_LEAD_MINUTES` (default 15) and messages every chat
+  in `ALLOWED_CHAT_IDS`. Each event+start time is recorded in SQLite once
+  sent so it's never repeated across polls. No agent, no prompt — pure
+  CalDAV read + `bot.send_message`.
+
+Leave the CalDAV variables blank to skip this entirely: `/today` says it's
+not configured, and the reminder loop exits immediately at startup.
+
 ## Adding another agent
 
 Subclass `AgentRunner` in `src/agent8s/agents/` (see `claude_agent.py` /
@@ -142,6 +171,5 @@ the `ALLOWED_CHAT_IDS` whitelist:
 
 ## Roadmap
 
-Later stages from the original plan (not implemented yet): Yandex Calendar
-reminders via CalDAV + cron (deliberately kept LLM-free), and streamed
-progress (`stream-json`) with multiple concurrent worktrees.
+Not implemented yet: streamed progress (`stream-json`) with multiple
+concurrent worktrees.

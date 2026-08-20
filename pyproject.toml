@@ -5,6 +5,7 @@ description = "Telegram bot that drives headless coding agents (Claude Code, Cod
 requires-python = ">=3.11"
 dependencies = [
     "aiogram>=3.13",
+    "caldav>=3.2.1",
     "python-dotenv>=1.0",
 ]
 

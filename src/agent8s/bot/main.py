@@ -10,6 +10,7 @@ from ..config import load_config
 from ..db import Database
 from .handlers import register_handlers
 from .middleware import AllowlistMiddleware
+from .reminders import reminder_loop
 
 
 async def _main() -> None:
@@ -22,7 +23,10 @@ async def _main() -> None:
     dp.update.outer_middleware(AllowlistMiddleware(config.allowed_chat_ids))
     dp.include_router(register_handlers())
 
-    await dp.start_polling(bot, db=db, config=config)
+    await asyncio.gather(
+        dp.start_polling(bot, db=db, config=config),
+        reminder_loop(bot, db, config),
+    )
 
 
 def run() -> None:

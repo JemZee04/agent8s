@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import re
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from aiogram import Router
 from aiogram.filters import Command, CommandObject
 from aiogram.types import BufferedInputFile, Message
 
-from .. import atlassian, git_ops, scaffold
+from .. import atlassian, calendar_client, git_ops, scaffold
 from ..agents import AGENT_NAMES, build_agent
 from ..config import Config
 from ..db import Database, Task
@@ -32,7 +34,8 @@ async def cmd_start(message: Message) -> None:
         "/approve — commit + merge the active task into the default branch\n"
         "/drop — discard the active task and its worktree\n"
         "/context <ISSUE-KEY> — pull a Jira ticket's description into the chat\n"
-        "/task <ISSUE-KEY> [instructions] — pull the ticket and start a task from it\n\n"
+        "/task <ISSUE-KEY> [instructions] — pull the ticket and start a task from it\n"
+        "/today — today's events from Yandex Calendar\n\n"
         "Any other text is either a new task (if none is active) or a "
         "follow-up to the active one."
     )
@@ -260,6 +263,33 @@ async def cmd_task(message: Message, command: CommandObject, db: Database, confi
                          default_branch=project.default_branch, agent_name=state.current_agent, prompt=prompt)
 
 
+async def cmd_today(message: Message, config: Config) -> None:
+    if not config.caldav_configured:
+        await message.answer("Yandex Calendar is not configured (YANDEX_CALDAV_URL / _LOGIN / _PASSWORD missing in .env).")
+        return
+
+    local_start = datetime.now().astimezone().replace(hour=0, minute=0, second=0, microsecond=0)
+    local_end = local_start + timedelta(days=1)
+
+    try:
+        events = await asyncio.to_thread(calendar_client.fetch_events, config, local_start, local_end)
+    except calendar_client.CalendarError as e:
+        await message.answer(f"Could not fetch calendar: {e}")
+        return
+
+    if not events:
+        await message.answer("No events today.")
+        return
+
+    lines = []
+    for event in events:
+        line = f"{event.start.astimezone().strftime('%H:%M')} — {event.summary}"
+        if event.location:
+            line += f" ({event.location})"
+        lines.append(line)
+    await message.answer(_truncate("\n".join(lines)))
+
+
 async def handle_free_text(message: Message, db: Database, config: Config) -> None:
     if not message.text or message.text.startswith("/"):
         return
@@ -368,5 +398,6 @@ def register_handlers() -> Router:
     router.message.register(cmd_drop, Command("drop"))
     router.message.register(cmd_context, Command("context"))
     router.message.register(cmd_task, Command("task"))
+    router.message.register(cmd_today, Command("today"))
     router.message.register(handle_free_text)
     return router
