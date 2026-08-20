@@ -11,10 +11,12 @@ model's context.
 Telegram ── aiogram bot ── SQLite (projects, tasks, session_id) ── git worktree ── claude -p / codex exec
 ```
 
-This is the Этап 0+1+2+3+4 slice: register or scaffold projects, run tasks
-in worktrees, inspect diffs, approve (merge) or drop them, switch between
-agents, pull Jira context straight into a task, and get calendar reminders.
-No push/deploy — merges stay local.
+This is the Этап 0+1+2+3+4+5 slice: register or scaffold projects, run tasks
+in worktrees with live streamed progress, inspect diffs, approve (merge) or
+drop them, switch between agents, pull Jira context straight into a task,
+and get calendar reminders. No push/deploy — merges stay local. Task queueing
+and concurrent worktrees (the other half of Этап 5) aren't done — still one
+active task per chat at a time.
 
 ## Setup
 
@@ -71,15 +73,20 @@ purely local scaffolding.
 
 Free text with no active task starts a new one: creates
 `agent8s/task-<id>` as a branch + worktree, and runs the selected agent's
-headless mode (`claude -p ... --output-format json` /
-`codex exec --json ...`) with the message as the prompt. The reply is the
-agent's own summary plus `git diff --stat` — never the agent's self-report of
-what it changed.
+headless mode (`claude -p ... --output-format stream-json --verbose` /
+`codex exec --json ...`) with the message as the prompt. While it runs, the
+bot edits a single message live with each step as it happens — `🔧 Bash: npm
+test`, `📝 add src/foo.py`, `💬 <a thinking-out-loud note>` — instead of going
+silent until the whole task finishes; edits are throttled client-side
+(roughly every 2s) since Telegram rate-limits message edits, but no step is
+ever dropped, just coalesced into the next edit. When it's done that same
+message is replaced with the agent's own summary plus `git diff --stat` —
+never the agent's self-report of what it changed.
 
 Free text while a task is active is a follow-up: it resumes the same agent
-session (`--resume` / `codex exec resume`) in the same worktree, so
-"actually, extract that into its own function" continues the conversation
-instead of starting over.
+session (`--resume` / `codex exec resume`) in the same worktree with the same
+live progress, so "actually, extract that into its own function" continues
+the conversation instead of starting over.
 
 - `/diff` — full `git diff` of the active task, sent as a file (Telegram's
   4096-char message limit makes anything non-trivial unreadable inline).
@@ -186,5 +193,5 @@ the `ALLOWED_CHAT_IDS` whitelist:
 
 ## Roadmap
 
-Not implemented yet: streamed progress (`stream-json`) with multiple
-concurrent worktrees.
+Not implemented yet: a task queue and running multiple worktrees
+concurrently — right now a chat can only have one active task at a time.

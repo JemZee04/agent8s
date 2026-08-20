@@ -3,7 +3,9 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Awaitable, Callable, Optional
+
+ProgressCallback = Callable[[str], Awaitable[None]]
 
 
 @dataclass
@@ -24,9 +26,11 @@ class AgentRunner(ABC):
     name: str
 
     @abstractmethod
-    async def start(self, prompt: str, cwd: Path) -> AgentResult:
-        """Run a fresh session in cwd."""
+    async def start(self, prompt: str, cwd: Path, on_progress: Optional[ProgressCallback] = None) -> AgentResult:
+        """Run a fresh session in cwd, reporting live steps via on_progress if given."""
 
     @abstractmethod
-    async def resume(self, session_id: str, prompt: str, cwd: Path) -> AgentResult:
+    async def resume(
+        self, session_id: str, prompt: str, cwd: Path, on_progress: Optional[ProgressCallback] = None
+    ) -> AgentResult:
         """Continue a previous session (follow-up message) in cwd."""

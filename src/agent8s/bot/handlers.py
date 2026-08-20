@@ -13,6 +13,7 @@ from .. import atlassian, calendar_client, git_ops, scaffold
 from ..agents import AGENT_NAMES, build_agent
 from ..config import Config
 from ..db import Database, Task
+from .progress import ProgressReporter
 
 router = Router()
 
@@ -326,20 +327,21 @@ async def _run_new_task(
     task.branch = branch
     task.worktree_path = str(worktree_path)
 
-    await message.answer(f"⏳ {agent_name} is starting task #{task.id} on a new branch ({branch})...")
+    reporter = ProgressReporter(message, f"⏳ {agent_name} is starting task #{task.id} on a new branch ({branch})...")
+    await reporter.start()
 
     try:
         git_ops.create_worktree(project_root, branch, worktree_path, default_branch)
     except git_ops.GitError as e:
         db.update_task_status(task.id, "failed")
-        await message.answer(f"Could not create worktree: {e}")
+        await reporter.finish(f"Could not create worktree: {e}")
         return
 
     db.set_active_task(message.chat.id, task.id)
 
     agent = build_agent(agent_name, config)
-    result = await agent.start(prompt, worktree_path)
-    await _finish_agent_turn(message, db, task, worktree_path, result)
+    result = await agent.start(prompt, worktree_path, on_progress=reporter.update)
+    await _finish_agent_turn(reporter, db, task, worktree_path, result)
 
 
 async def _run_followup(message: Message, db: Database, config: Config, task: Task) -> None:
@@ -347,27 +349,28 @@ async def _run_followup(message: Message, db: Database, config: Config, task: Ta
         await message.answer("Active task has no session yet — try again in a moment, or /drop it.")
         return
     worktree_path = Path(task.worktree_path)
-    await message.answer(f"⏳ {task.agent_name} is continuing task #{task.id}...")
+    reporter = ProgressReporter(message, f"⏳ {task.agent_name} is continuing task #{task.id}...")
+    await reporter.start()
 
     agent = build_agent(task.agent_name, config)
-    result = await agent.resume(task.session_id, message.text, worktree_path)
-    await _finish_agent_turn(message, db, task, worktree_path, result)
+    result = await agent.resume(task.session_id, message.text, worktree_path, on_progress=reporter.update)
+    await _finish_agent_turn(reporter, db, task, worktree_path, result)
 
 
-async def _finish_agent_turn(message: Message, db: Database, task: Task, worktree_path: Path, result) -> None:
+async def _finish_agent_turn(reporter: ProgressReporter, db: Database, task: Task, worktree_path: Path, result) -> None:
     if result.session_id:
         db.update_task_session(task.id, result.session_id)
 
     if not result.success:
         db.update_task_status(task.id, "failed")
-        await message.answer(f"❌ task #{task.id} failed:\n{_truncate(result.summary or 'no output')}")
+        await reporter.finish(f"❌ task #{task.id} failed:\n{_truncate(result.summary or 'no output')}")
         return
 
     db.update_task_status(task.id, "active")
 
     stat = git_ops.diff_stat(worktree_path) or "(no file changes)"
     reply = f"✅ task #{task.id}\n\n{_truncate(result.summary)}\n\n{_truncate(stat)}"
-    await message.answer(reply)
+    await reporter.finish(reply)
 
 
 async def _require_active_task(message: Message, db: Database) -> Task | None:
