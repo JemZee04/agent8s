@@ -1,0 +1,19 @@
+[project]
+name = "agent8s"
+version = "0.1.0"
+description = "Telegram bot that drives headless coding agents (Claude Code, Codex) over local git repos via git worktrees"
+requires-python = ">=3.11"
+dependencies = [
+    "aiogram>=3.13",
+    "python-dotenv>=1.0",
+]
+
+[project.scripts]
+agent8s-bot = "agent8s.bot.main:run"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agent8s"]
