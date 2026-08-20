@@ -1,5 +1,7 @@
 # agent8s
 
+Инструкция на русском: [README.ru.md](README.ru.md)
+
 Telegram bot that drives headless coding agents (Claude Code, Codex — more
 pluggable via `src/agent8s/agents/`) against local git repos, one isolated
 `git worktree` per task, with all state in SQLite and git instead of the
