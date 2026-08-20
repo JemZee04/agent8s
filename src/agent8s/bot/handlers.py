@@ -7,7 +7,7 @@ from aiogram import Router
 from aiogram.filters import Command, CommandObject
 from aiogram.types import BufferedInputFile, Message
 
-from .. import git_ops, scaffold
+from .. import atlassian, git_ops, scaffold
 from ..agents import AGENT_NAMES, build_agent
 from ..config import Config
 from ..db import Database, Task
@@ -16,6 +16,7 @@ router = Router()
 
 TELEGRAM_TEXT_LIMIT = 4000  # leave headroom below Telegram's 4096 hard cap
 PROJECT_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]*$")
+JIRA_KEY_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]*-\d+$")
 
 
 async def cmd_start(message: Message) -> None:
@@ -29,7 +30,9 @@ async def cmd_start(message: Message) -> None:
         "/status — current project, agent, active task\n"
         "/diff — full diff of the active task, as a file\n"
         "/approve — commit + merge the active task into the default branch\n"
-        "/drop — discard the active task and its worktree\n\n"
+        "/drop — discard the active task and its worktree\n"
+        "/context <ISSUE-KEY> — pull a Jira ticket's description into the chat\n"
+        "/task <ISSUE-KEY> [instructions] — pull the ticket and start a task from it\n\n"
         "Any other text is either a new task (if none is active) or a "
         "follow-up to the active one."
     )
@@ -199,6 +202,64 @@ async def cmd_drop(message: Message, db: Database) -> None:
     await message.answer(f"Dropped task #{task.id} ({task.branch}). Worktree removed, changes discarded.")
 
 
+async def cmd_context(message: Message, command: CommandObject, config: Config) -> None:
+    if not config.jira_configured:
+        await message.answer("Jira is not configured (JIRA_URL / JIRA_PERSONAL_TOKEN missing in .env).")
+        return
+    if not command.args:
+        await message.answer("Usage: /context <ISSUE-KEY>")
+        return
+    key = command.args.strip().split()[0].upper()
+    if not JIRA_KEY_RE.match(key):
+        await message.answer(f"'{key}' doesn't look like a Jira issue key (e.g. PROJ-123).")
+        return
+
+    try:
+        issue = atlassian.fetch_issue(config, key)
+    except atlassian.AtlassianError as e:
+        await message.answer(f"Could not fetch {key}: {e}")
+        return
+
+    await message.answer(_truncate(issue.as_context_text()))
+
+
+async def cmd_task(message: Message, command: CommandObject, db: Database, config: Config) -> None:
+    if not config.jira_configured:
+        await message.answer("Jira is not configured (JIRA_URL / JIRA_PERSONAL_TOKEN missing in .env).")
+        return
+    if not command.args:
+        await message.answer("Usage: /task <ISSUE-KEY> [extra instructions]")
+        return
+
+    parts = command.args.strip().split(maxsplit=1)
+    key = parts[0].upper()
+    extra = parts[1] if len(parts) > 1 else None
+    if not JIRA_KEY_RE.match(key):
+        await message.answer(f"'{key}' doesn't look like a Jira issue key (e.g. PROJ-123).")
+        return
+
+    state = db.get_chat_state(message.chat.id)
+    if state.current_project_id is None:
+        await message.answer("No active project. Pick one with /use <name> first (see /projects).")
+        return
+    if state.active_task_id is not None:
+        await message.answer("A task is already active in this chat — /approve or /drop it first.")
+        return
+    project = db.get_project(state.current_project_id)
+
+    try:
+        issue = atlassian.fetch_issue(config, key)
+    except atlassian.AtlassianError as e:
+        await message.answer(f"Could not fetch {key}: {e}")
+        return
+
+    prompt = issue.as_context_text() + "\n\n---\nTask: " + (extra or "Implement what's described in the Jira ticket above.")
+    await message.answer(f"Pulled {key} from Jira" + (f" + {len(issue.confluence_pages)} Confluence page(s)" if issue.confluence_pages else "") + ". Starting task...")
+
+    await _run_new_task(message, db, config, project_id=project.id, project_path=project.path,
+                         default_branch=project.default_branch, agent_name=state.current_agent, prompt=prompt)
+
+
 async def handle_free_text(message: Message, db: Database, config: Config) -> None:
     if not message.text or message.text.startswith("/"):
         return
@@ -305,5 +366,7 @@ def register_handlers() -> Router:
     router.message.register(cmd_diff, Command("diff"))
     router.message.register(cmd_approve, Command("approve"))
     router.message.register(cmd_drop, Command("drop"))
+    router.message.register(cmd_context, Command("context"))
+    router.message.register(cmd_task, Command("task"))
     router.message.register(handle_free_text)
     return router

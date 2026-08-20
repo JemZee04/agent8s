@@ -9,10 +9,10 @@ model's context.
 Telegram ── aiogram bot ── SQLite (projects, tasks, session_id) ── git worktree ── claude -p / codex exec
 ```
 
-This is the Этап 0+1+2 slice: register or scaffold projects, run tasks in
-worktrees, inspect diffs, approve (merge) or drop them, and switch between
-agents. No Jira/Confluence/calendar integration yet, no push/deploy — merges
-stay local.
+This is the Этап 0+1+2+3 slice: register or scaffold projects, run tasks in
+worktrees, inspect diffs, approve (merge) or drop them, switch between
+agents, and pull Jira context straight into a task. No calendar integration
+yet, no push/deploy — merges stay local.
 
 ## Setup
 
@@ -87,6 +87,36 @@ instead of starting over.
 - `/drop` — discards the task: removes the worktree and branch.
 - `/status` — current project, agent, and active task for this chat.
 
+## Jira context
+
+```
+/context PROJ-123
+/task PROJ-123 also add a unit test for the edge case
+```
+
+Set `JIRA_URL` / `JIRA_PERSONAL_TOKEN` (and `CONFLUENCE_URL` /
+`CONFLUENCE_PERSONAL_TOKEN` if you want linked pages pulled in too) in
+`.env` — Server/Data Center only, Bearer-token auth via a Personal Access
+Token (avatar → Profile → Personal Access Tokens → Create token). Leave
+them blank to skip Atlassian entirely; `/context` and `/task` will just say
+it's not configured.
+
+- `/context <KEY>` — fetches the issue's summary/description/status and any
+  Confluence pages linked to it via Jira remote links, and posts it as plain
+  text. No agent call, no worktree — just a readable restatement of the
+  ticket.
+- `/task <KEY> [instructions]` — same fetch, then starts a task (like free
+  text with no active task) using the ticket + linked pages as context,
+  followed by your instructions or a default "implement what's described
+  above". Requires an active project (`/use`) and no already-active task.
+
+This fetches Jira/Confluence over REST from the orchestrator, deterministically,
+rather than giving the agent MCP tools to search on its own — cheaper, and
+`/context` shows you exactly what the agent is about to see before it starts.
+Wiring an actual Atlassian MCP server into the agent (so it can search
+Confluence beyond what's directly linked) is a possible later upgrade, not
+done here.
+
 ## Adding another agent
 
 Subclass `AgentRunner` in `src/agent8s/agents/` (see `claude_agent.py` /
@@ -112,7 +142,6 @@ the `ALLOWED_CHAT_IDS` whitelist:
 
 ## Roadmap
 
-Later stages from the original plan (not implemented yet): Atlassian MCP
-(Jira/Confluence context pulled into tasks), Yandex Calendar reminders via
-CalDAV + cron (deliberately kept LLM-free), and streamed progress
-(`stream-json`) with multiple concurrent worktrees.
+Later stages from the original plan (not implemented yet): Yandex Calendar
+reminders via CalDAV + cron (deliberately kept LLM-free), and streamed
+progress (`stream-json`) with multiple concurrent worktrees.

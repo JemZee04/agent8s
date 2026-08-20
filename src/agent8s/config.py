@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Optional
 
 from dotenv import load_dotenv
 
@@ -20,14 +21,31 @@ class Config:
     claude_allowed_tools: list[str] = field(default_factory=list)
     claude_permission_mode: str = "acceptEdits"
     codex_sandbox: str = "workspace-write"
+    jira_url: Optional[str] = None
+    jira_token: Optional[str] = None
+    jira_verify_ssl: bool = True
+    confluence_url: Optional[str] = None
+    confluence_token: Optional[str] = None
+    confluence_verify_ssl: bool = True
 
     @property
     def db_path(self) -> Path:
         return self.data_dir / "agent8s.sqlite3"
 
+    @property
+    def jira_configured(self) -> bool:
+        return bool(self.jira_url and self.jira_token)
+
 
 def _split_csv(value: str) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _bool_env(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in ("0", "false", "no", "off")
 
 
 def load_config() -> Config:
@@ -56,4 +74,10 @@ def load_config() -> Config:
         claude_allowed_tools=_split_csv(os.environ.get("AGENT8S_CLAUDE_ALLOWED_TOOLS", "Bash,Edit,Write,Read,Grep,Glob")),
         claude_permission_mode=os.environ.get("AGENT8S_CLAUDE_PERMISSION_MODE", "acceptEdits").strip(),
         codex_sandbox=os.environ.get("AGENT8S_CODEX_SANDBOX", "workspace-write").strip(),
+        jira_url=os.environ.get("JIRA_URL", "").strip() or None,
+        jira_token=os.environ.get("JIRA_PERSONAL_TOKEN", "").strip() or None,
+        jira_verify_ssl=_bool_env("JIRA_SSL_VERIFY", True),
+        confluence_url=os.environ.get("CONFLUENCE_URL", "").strip() or None,
+        confluence_token=os.environ.get("CONFLUENCE_PERSONAL_TOKEN", "").strip() or None,
+        confluence_verify_ssl=_bool_env("CONFLUENCE_SSL_VERIFY", True),
     )
