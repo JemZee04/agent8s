@@ -171,9 +171,10 @@ today, so this only affects the `claude` agent.
 ## Adding another agent
 
 Subclass `AgentRunner` in `src/agent8s/agents/` (see `claude_agent.py` /
-`codex_agent.py` for the shape: `start(prompt, cwd)` and
-`resume(session_id, prompt, cwd)`, both returning session id + summary text),
-then add one line to `AGENT_NAMES` and `build_agent()` in
+`codex_agent.py` for the shape: `start(prompt, cwd, on_progress)` and
+`resume(session_id, prompt, cwd, on_progress)` — `on_progress` is an optional
+`async def(line: str)` called for each live step, both returning session id +
+summary text), then add one line to `AGENT_NAMES` and `build_agent()` in
 `src/agent8s/agents/registry.py`. Nothing in the bot or database layer needs
 to change.
 
