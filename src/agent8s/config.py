@@ -80,7 +80,7 @@ def load_config() -> Config:
         worktree_dir=worktree_dir,
         projects_dir=projects_dir,
         default_agent=os.environ.get("AGENT8S_DEFAULT_AGENT", "claude").strip(),
-        claude_allowed_tools=_split_csv(os.environ.get("AGENT8S_CLAUDE_ALLOWED_TOOLS", "Bash,Edit,Write,Read,Grep,Glob")),
+        claude_allowed_tools=_split_csv(os.environ.get("AGENT8S_CLAUDE_ALLOWED_TOOLS", "Bash,Edit,Write,Read,Grep,Glob,Skill")),
         claude_permission_mode=os.environ.get("AGENT8S_CLAUDE_PERMISSION_MODE", "acceptEdits").strip(),
         codex_sandbox=os.environ.get("AGENT8S_CODEX_SANDBOX", "workspace-write").strip(),
         jira_url=os.environ.get("JIRA_URL", "").strip() or None,

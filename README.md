@@ -146,6 +146,19 @@ while waiting for that to take effect.
 Leave the CalDAV variables blank to skip this entirely: `/today` says it's
 not configured, and the reminder loop exits immediately at startup.
 
+## Skills
+
+`AGENT8S_CLAUDE_ALLOWED_TOOLS` includes `Skill` by default, so headless
+`claude -p` picks up whatever skills you have configured — user-level
+(`~/.claude/skills`), project-level, or via plugins — and decides on its own
+when a task matches one, exactly like an interactive session. Verified this
+directly: a headless run from inside a worktree lists the same skill set as
+an interactive session on this machine (`tdd`, `code-review`, the
+`mattpocock-skills` plugin set, etc.) once `Skill` is allowed — without it,
+the tool call would just get silently denied since there's no one in
+headless mode to approve an unlisted tool. Codex has no equivalent mechanism
+today, so this only affects the `claude` agent.
+
 ## Adding another agent
 
 Subclass `AgentRunner` in `src/agent8s/agents/` (see `claude_agent.py` /
