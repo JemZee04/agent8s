@@ -10,7 +10,7 @@ from aiogram.client.default import DefaultBotProperties
 from ..config import load_config
 from ..db import Database
 from ..singleton import acquire_singleton_lock
-from .handlers import register_handlers
+from .handlers import get_bot_commands, register_handlers
 from .middleware import AllowlistMiddleware
 from .reminders import reminder_loop
 
@@ -68,6 +68,7 @@ async def _main() -> None:
     dp.update.outer_middleware(AllowlistMiddleware(config.allowed_chat_ids))
     dp.include_router(register_handlers())
 
+    await bot.set_my_commands(get_bot_commands())
     await _notify_stale_tasks(bot, db)
 
     await asyncio.gather(

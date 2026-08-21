@@ -57,6 +57,12 @@ login, `codex` via its own login) — the bot itself does no auth handling.
 Runs in the foreground via long polling — no inbound ports, no server to
 expose. Stop with Ctrl-C.
 
+On every startup the bot registers its command list with Telegram
+(`bot.set_my_commands`, see `BOT_COMMANDS` in `src/agent8s/bot/handlers.py`)
+so they show up with descriptions in the client's `/` menu — no separate
+step needed, and it stays in sync automatically whenever a command is
+added or reworded.
+
 ## Using it
 
 ```

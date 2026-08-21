@@ -9,7 +9,7 @@ from pathlib import Path
 
 from aiogram import Router
 from aiogram.filters import Command, CommandObject
-from aiogram.types import BufferedInputFile, Message
+from aiogram.types import BotCommand, BufferedInputFile, Message
 
 from .. import atlassian, calendar_client, git_ops, launchagent, scaffold, selfrepo
 from ..agents import AGENT_NAMES, build_agent
@@ -22,6 +22,33 @@ router = Router()
 
 TELEGRAM_TEXT_LIMIT = 4000  # запас ниже жёсткого лимита Telegram в 4096
 PROJECT_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]*$")
+
+# Показывается в меню команд Telegram (кнопка "/" у поля ввода).
+BOT_COMMANDS: list[tuple[str, str]] = [
+    ("help", "Список команд и инструкция"),
+    ("projects", "Список проектов"),
+    ("use", "Выбрать активный проект"),
+    ("new", "Создать новый проект"),
+    ("add_project", "Зарегистрировать существующий репозиторий"),
+    ("agent", "Переключить агента (claude/codex)"),
+    ("agents", "Список доступных агентов"),
+    ("status", "Текущий проект, агент, активная задача"),
+    ("ask", "Вопрос без создания задачи (только чтение)"),
+    ("diff", "Diff активной задачи файлом"),
+    ("approve", "Смержить активную задачу"),
+    ("drop", "Отменить активную задачу"),
+    ("continue", "Продолжить отложенную/прерванную задачу"),
+    ("context", "Подтянуть тикет Jira в чат"),
+    ("task", "Начать задачу по тикету Jira"),
+    ("today", "События на сегодня из Яндекс.Календаря"),
+    ("diagnose", "Диагностировать и починить сам бот"),
+    ("restart", "Перезапустить бота (применить смерженный фикс)"),
+    ("autostart", "Автозапуск бота: on|off|status"),
+]
+
+
+def get_bot_commands() -> list[BotCommand]:
+    return [BotCommand(command=name, description=description) for name, description in BOT_COMMANDS]
 JIRA_KEY_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]*-\d+$")
 
 
