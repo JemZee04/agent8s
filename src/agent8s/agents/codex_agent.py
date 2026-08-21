@@ -10,6 +10,8 @@ from .base import AgentResult, AgentRunner, ProgressCallback
 
 DEFAULT_TIMEOUT_SECONDS = 20 * 60
 MAX_DETAIL_LEN = 150
+# See claude_agent.py's STREAM_LIMIT — same LimitOverrunError risk here.
+STREAM_LIMIT = 16 * 1024 * 1024
 
 
 class CodexAgent(AgentRunner):
@@ -42,6 +44,7 @@ class CodexAgent(AgentRunner):
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            limit=STREAM_LIMIT,
         )
 
         thread_id: Optional[str] = None

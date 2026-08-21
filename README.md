@@ -217,27 +217,35 @@ the tool call would just get silently denied since there's no one in
 headless mode to approve an unlisted tool. Codex has no equivalent mechanism
 today, so this only affects the `claude` agent.
 
-## Self-maintenance: /diagnose, /restart, /autostart
+## Self-maintenance: /diagnose, /improve, /restart, /autostart
 
 ```
 /diagnose bot got stuck for 17 hours with no error, task #3 status was "running" forever
+/improve add a /whoami command that echoes the chat's ALLOWED_CHAT_IDS entry
 /restart
 /autostart on
 ```
 
-`/diagnose [symptom]` points the bot at its own source: registers itself as
-a project (name `agent8s`, path resolved from `__file__` — no config needed)
-the first time it's used, and runs a normal task against it — worktree,
-branch, live progress, `/diff`, `/approve`, all the same machinery as any
-other task. It feeds the agent the tail of `data/bot.log` (rotating file
-handler, persisted across restarts — not just stdout, which disappears with
-the terminal) alongside your description, and tells it explicitly not to
-merge or restart on its own. If some other task was active for the chat, it
-gets *parked* (see `/continue` above) rather than blocked on or lost, so you
-can fix the bot without losing your place on whatever else you were doing.
+`/diagnose [symptom]` and `/improve <what to add/change>` both point the bot
+at its own source — same underlying `_run_self_task`, different prompt
+framing (bug-hunt-with-log-context vs. feature-shaped-like-the-existing-code),
+picked by which one matches what you actually want. Both register the bot
+as a project (name `agent8s`, path resolved from `__file__` — no config
+needed) the first time either is used, and run a normal task against it —
+worktree, branch, live progress, `/diff`, `/approve`, all the same machinery
+as any other task. `/diagnose` additionally feeds the agent the tail of
+`data/bot.log` (rotating file handler, persisted across restarts — not just
+stdout, which disappears with the terminal). Both tell the agent explicitly
+not to merge or restart on its own, and `/improve` also points it at
+`handlers.py`/`agents/` as the style reference and asks it to update the
+READMEs when the change is worth documenting. If some other task was active
+for the chat, it gets *parked* (see `/continue` above) rather than blocked
+on or lost, so you can work on the bot without losing your place on whatever
+else you were doing.
 
-`/approve`-ing a self-fix only merges the branch — the running process is
-still executing the old code from memory (Python doesn't hot-reload).
+`/approve`-ing a self-fix or self-improvement only merges the branch — the
+running process is still executing the old code from memory (Python doesn't
+hot-reload).
 `/restart` re-execs the process in place (`os.execv`, same PID, keeps the
 singleton lock) so the merged change actually takes effect; it's a separate,
 explicit step on purpose — you decide when, not the moment a fix is merged.
@@ -321,6 +329,14 @@ just fixing quietly:
   wrapped so *any* unexpected exception becomes a normal failed result
   instead of an unhandled crash — the whole point being that a task can no
   longer die silently with nothing to show for it.
+- Both agent subprocess readers now pass `limit=16 * 1024 * 1024` to
+  `asyncio.create_subprocess_exec` (`STREAM_LIMIT` in `claude_agent.py` /
+  `codex_agent.py`). Caught live via the exception-safety net above: a
+  `/improve` task reading its own (large) `handlers.py` produced a
+  stream-json line past asyncio's default 64KiB-per-line `StreamReader`
+  limit, raising `LimitOverrunError` — silently turned into a failed result
+  instead of a stuck task, but worth actually fixing rather than leaving
+  every large-file read as a coin flip.
 
 ## Roadmap
 

@@ -42,6 +42,7 @@ BOT_COMMANDS: list[tuple[str, str]] = [
     ("task", "Начать задачу по тикету Jira"),
     ("today", "События на сегодня из Яндекс.Календаря"),
     ("diagnose", "Диагностировать и починить сам бот"),
+    ("improve", "Добавить или изменить возможность в самом боте"),
     ("restart", "Перезапустить бота (применить смерженный фикс)"),
     ("autostart", "Автозапуск бота: on|off|status"),
 ]
@@ -76,6 +77,7 @@ async def cmd_start(message: Message) -> None:
         "/today — сегодняшние события из Яндекс.Календаря\n\n"
         "Сам бот:\n"
         "/diagnose [описание проблемы] — диагностировать и починить сам бот (отдельно от текущей задачи)\n"
+        "/improve <что добавить/изменить> — доработать сам бот новой возможностью (та же механика, что у /diagnose)\n"
         "/restart — перезапустить бот, чтобы применились смерженные изменения в его коде\n"
         "/autostart on|off|status — автозапуск бота при логине и автоперезапуск при краше\n"
         "/help — эта инструкция"
@@ -398,16 +400,61 @@ async def cmd_ask(message: Message, command: CommandObject, db: Database, config
 
 
 async def cmd_diagnose(message: Message, command: CommandObject, db: Database, config: Config) -> None:
+    def build_prompt(args: str | None) -> str:
+        log_tail = selfrepo.tail_log(config.data_dir)
+        symptom = args or "бот завис или повёл себя неожиданно — деталей не указано, разберись по логам"
+        return (
+            "Ты чинишь код своего собственного проекта agent8s — Telegram-бота, которым сейчас управляешь.\n\n"
+            f"Симптом от пользователя: {symptom}\n\n"
+            f"Последние строки лог-файла бота (data/bot.log):\n```\n{log_tail}\n```\n\n"
+            "Разберись в первопричине через код и git-историю (git log, git blame), исправь. "
+            "Изменение смержится через /approve, а применится через отдельную команду /restart — "
+            "сам ничего не мержи и не перезапускай, просто внеси и объясни исправление."
+        )
+
+    await _run_self_task(
+        message, db, config, args=command.args, build_prompt=build_prompt,
+        start_note="🔧 Начинаю диагностику agent8s.", busy_note="Уже чиню себя в задаче",
+    )
+
+
+async def cmd_improve(message: Message, command: CommandObject, db: Database, config: Config) -> None:
+    if not command.args:
+        await message.answer("Использование: /improve <что добавить или изменить в самом боте>")
+        return
+
+    def build_prompt(args: str | None) -> str:
+        return (
+            "Ты дорабатываешь код своего собственного проекта agent8s — Telegram-бота, которым сейчас управляешь.\n\n"
+            f"Запрос на доработку от пользователя: {args}\n\n"
+            "Реализуй аккуратно, тем же стилем, что и остальной код: посмотри на существующие паттерны "
+            "(например src/agent8s/bot/handlers.py — как устроены остальные команды, src/agent8s/agents/ — "
+            "как устроены агенты), не ломай то, что уже работает. Обнови README.md и README.ru.md, если "
+            "добавляешь новую команду или поведение, которое стоит задокументировать. "
+            "Изменение смержится через /approve, а применится через отдельную команду /restart — "
+            "сам ничего не мержи и не перезапускай."
+        )
+
+    await _run_self_task(
+        message, db, config, args=command.args, build_prompt=build_prompt,
+        start_note="🛠️ Начинаю доработку agent8s.", busy_note="Уже дорабатываю себя в задаче",
+    )
+
+
+async def _run_self_task(
+    message: Message, db: Database, config: Config, *,
+    args: str | None, build_prompt, start_note: str, busy_note: str,
+) -> None:
     self_project = _ensure_self_project(db, config)
     state = db.get_chat_state(message.chat.id)
 
     if state.active_task_id is not None:
         active_task = db.get_task(state.active_task_id)
         if active_task.project_id == self_project.id and active_task.status in ("running", "active"):
-            if command.args:
-                await _run_followup(message, db, config, active_task, prompt=command.args)
+            if args:
+                await _run_followup(message, db, config, active_task, prompt=args)
             else:
-                await message.answer(f"Уже чиню себя в задаче #{active_task.id} — просто напиши, что уточнить.")
+                await message.answer(f"{busy_note} #{active_task.id} — просто напиши, что уточнить.")
             return
         db.set_parked_task(message.chat.id, state.active_task_id)
         db.set_active_task(message.chat.id, None)
@@ -415,17 +462,8 @@ async def cmd_diagnose(message: Message, command: CommandObject, db: Database, c
     else:
         parked_note = ""
 
-    log_tail = selfrepo.tail_log(config.data_dir)
-    symptom = command.args or "бот завис или повёл себя неожиданно — деталей не указано, разберись по логам"
-    prompt = (
-        "Ты чинишь код своего собственного проекта agent8s — Telegram-бота, которым сейчас управляешь.\n\n"
-        f"Симптом от пользователя: {symptom}\n\n"
-        f"Последние строки лог-файла бота (data/bot.log):\n```\n{log_tail}\n```\n\n"
-        "Разберись в первопричине через код и git-историю (git log, git blame), исправь. "
-        "Изменение смержится через /approve, а применится через отдельную команду /restart — "
-        "сам ничего не мержи и не перезапускай, просто внеси и объясни исправление."
-    )
-    await message.answer(f"🔧 Начинаю диагностику agent8s.{parked_note}")
+    prompt = build_prompt(args)
+    await message.answer(f"{start_note}{parked_note}")
     await _run_new_task(message, db, config, project_id=self_project.id, project_path=self_project.path,
                          default_branch=self_project.default_branch, agent_name=state.current_agent, prompt=prompt)
 
@@ -606,6 +644,7 @@ def register_handlers() -> Router:
     router.message.register(cmd_today, Command("today"))
     router.message.register(cmd_ask, Command("ask"))
     router.message.register(cmd_diagnose, Command("diagnose"))
+    router.message.register(cmd_improve, Command("improve"))
     router.message.register(cmd_restart, Command("restart"))
     router.message.register(cmd_autostart, Command("autostart"))
     router.message.register(handle_free_text)

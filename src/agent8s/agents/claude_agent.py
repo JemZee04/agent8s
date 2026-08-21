@@ -9,6 +9,11 @@ from .base import AgentResult, AgentRunner, ProgressCallback
 
 DEFAULT_TIMEOUT_SECONDS = 20 * 60
 MAX_DETAIL_LEN = 150
+# asyncio's default StreamReader limit is 64KiB per line — a single
+# stream-json line can easily exceed that (e.g. a tool_result embedding a
+# large file's contents), raising LimitOverrunError and killing the read
+# loop. Bump it well above anything a single JSON event should hit.
+STREAM_LIMIT = 16 * 1024 * 1024
 
 
 class ClaudeAgent(AgentRunner):
@@ -54,6 +59,7 @@ class ClaudeAgent(AgentRunner):
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            limit=STREAM_LIMIT,
         )
 
         final_event: Optional[dict] = None
