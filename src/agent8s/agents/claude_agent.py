@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from typing import Optional
 
-from .base import AgentResult, AgentRunner, ProgressCallback
+from .base import AgentResult, AgentRunner, ProgressCallback, RESPONSE_LANGUAGE_INSTRUCTION
 
 DEFAULT_TIMEOUT_SECONDS = 20 * 60
 MAX_DETAIL_LEN = 150
@@ -47,6 +47,7 @@ class ClaudeAgent(AgentRunner):
             "claude", "-p", prompt,
             "--output-format", "stream-json", "--verbose",
             "--permission-mode", self._permission_mode,
+            "--append-system-prompt", RESPONSE_LANGUAGE_INSTRUCTION,
         ]
         if self._allowed_tools:
             args.extend(["--allowedTools", ",".join(self._allowed_tools)])

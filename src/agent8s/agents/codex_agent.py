@@ -6,7 +6,7 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
-from .base import AgentResult, AgentRunner, ProgressCallback
+from .base import AgentResult, AgentRunner, ProgressCallback, RESPONSE_LANGUAGE_INSTRUCTION
 
 DEFAULT_TIMEOUT_SECONDS = 20 * 60
 MAX_DETAIL_LEN = 150
@@ -23,13 +23,20 @@ class CodexAgent(AgentRunner):
 
     async def start(self, prompt: str, cwd: Path, on_progress: Optional[ProgressCallback] = None) -> AgentResult:
         args = ["codex", "exec", "--json", "-s", self._sandbox]
-        return await self._run(args, prompt, cwd, on_progress)
+        return await self._run(args, self._with_language_instruction(prompt), cwd, on_progress)
 
     async def resume(
         self, session_id: str, prompt: str, cwd: Path, on_progress: Optional[ProgressCallback] = None
     ) -> AgentResult:
         args = ["codex", "exec", "resume", session_id, "--json"]
-        return await self._run(args, prompt, cwd, on_progress)
+        return await self._run(args, self._with_language_instruction(prompt), cwd, on_progress)
+
+    @staticmethod
+    def _with_language_instruction(prompt: str) -> str:
+        # codex exec has no separate system-prompt flag (unlike claude's
+        # --append-system-prompt), so this rides along with the prompt text
+        # itself instead.
+        return f"{RESPONSE_LANGUAGE_INSTRUCTION}\n\n{prompt}"
 
     async def _run(
         self, args: list[str], prompt: str, cwd: Path, on_progress: Optional[ProgressCallback]

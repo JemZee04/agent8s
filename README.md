@@ -24,7 +24,14 @@ below).
 **The bot's own Telegram UI (every command's replies) is in Russian** — this
 README stays in English as the technical reference; [README.ru.md](README.ru.md)
 is both the practical Russian guide and a closer match to what you'll
-actually see in the chat.
+actually see in the chat. **The agents' own output is Russian too**, not
+just the bot's chrome around it — both `AgentRunner`s carry a
+`RESPONSE_LANGUAGE_INSTRUCTION` (`src/agent8s/agents/base.py`) that overrides
+the model's default lean toward English for anything code-shaped, even when
+prompted in English; verified live for both claude and codex against an
+English prompt. Code identifiers/comments are explicitly exempted — the
+instruction only covers what the agent says to the user, not the code it
+writes, so existing codebase conventions aren't disturbed.
 
 ## Setup
 

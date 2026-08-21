@@ -7,6 +7,18 @@ from typing import Awaitable, Callable, Optional
 
 ProgressCallback = Callable[[str], Awaitable[None]]
 
+# Claude/codex otherwise tend to default to English for anything code-shaped
+# even when the prompt itself is Russian (the model leans on the language of
+# surrounding code/docs, not just the immediate instruction). Every agent
+# applies this the same way so it's not something each handler has to
+# remember to add.
+RESPONSE_LANGUAGE_INSTRUCTION = (
+    "Общайся с пользователем на русском языке — итоговый ответ, любые "
+    "промежуточные пояснения и мысли вслух. Это не касается самого кода: "
+    "имена, идентификаторы и комментарии в коде пиши так, как уже принято "
+    "в конкретном репозитории, не меняй сложившийся стиль."
+)
+
 
 @dataclass
 class AgentResult:
