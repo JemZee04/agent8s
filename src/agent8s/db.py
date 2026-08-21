@@ -34,7 +34,8 @@ CREATE TABLE IF NOT EXISTS chat_state (
     chat_id INTEGER PRIMARY KEY,
     current_project_id INTEGER REFERENCES projects(id),
     current_agent TEXT NOT NULL DEFAULT 'claude',
-    active_task_id INTEGER REFERENCES tasks(id)
+    active_task_id INTEGER REFERENCES tasks(id),
+    parked_task_id INTEGER REFERENCES tasks(id)
 );
 
 CREATE TABLE IF NOT EXISTS sent_reminders (
@@ -77,6 +78,7 @@ class ChatState:
     current_project_id: Optional[int]
     current_agent: str
     active_task_id: Optional[int]
+    parked_task_id: Optional[int]
 
 
 class Database:
@@ -84,6 +86,15 @@ class Database:
         self._path = path
         with self._connect() as conn:
             conn.executescript(SCHEMA)
+            self._migrate(conn)
+
+    @staticmethod
+    def _migrate(conn: sqlite3.Connection) -> None:
+        # CREATE TABLE IF NOT EXISTS doesn't add columns to a table that
+        # already existed before this column was introduced.
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(chat_state)")}
+        if "parked_task_id" not in columns:
+            conn.execute("ALTER TABLE chat_state ADD COLUMN parked_task_id INTEGER REFERENCES tasks(id)")
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -128,15 +139,20 @@ class Database:
             r = conn.execute("SELECT * FROM chat_state WHERE chat_id = ?", (chat_id,)).fetchone()
             if r is None:
                 conn.execute(
-                    "INSERT INTO chat_state (chat_id, current_project_id, current_agent, active_task_id) VALUES (?, NULL, 'claude', NULL)",
+                    "INSERT INTO chat_state (chat_id, current_project_id, current_agent, active_task_id, parked_task_id) "
+                    "VALUES (?, NULL, 'claude', NULL, NULL)",
                     (chat_id,),
                 )
-                return ChatState(chat_id=chat_id, current_project_id=None, current_agent="claude", active_task_id=None)
+                return ChatState(
+                    chat_id=chat_id, current_project_id=None, current_agent="claude",
+                    active_task_id=None, parked_task_id=None,
+                )
             return ChatState(
                 chat_id=r["chat_id"],
                 current_project_id=r["current_project_id"],
                 current_agent=r["current_agent"],
                 active_task_id=r["active_task_id"],
+                parked_task_id=r["parked_task_id"],
             )
 
     def set_current_project(self, chat_id: int, project_id: int) -> None:
@@ -153,6 +169,11 @@ class Database:
         self.get_chat_state(chat_id)
         with self._connect() as conn:
             conn.execute("UPDATE chat_state SET active_task_id = ? WHERE chat_id = ?", (task_id, chat_id))
+
+    def set_parked_task(self, chat_id: int, task_id: Optional[int]) -> None:
+        self.get_chat_state(chat_id)
+        with self._connect() as conn:
+            conn.execute("UPDATE chat_state SET parked_task_id = ? WHERE chat_id = ?", (task_id, chat_id))
 
     # -- tasks --
 
@@ -184,19 +205,40 @@ class Database:
         marked 'running' when a fresh process starts belongs to a run that
         never got to report back (crash, force-kill, unhandled exception),
         and would otherwise sit stuck forever with the chat blocked on it.
+
+        If the task got far enough to have a session_id, claude/codex itself
+        persisted that session to disk independent of our process — that's
+        recoverable via /continue (status 'interrupted'). No session_id means
+        there's nothing to resume ('failed').
         """
         with self._connect() as conn:
             rows = conn.execute("SELECT * FROM tasks WHERE status = 'running'").fetchall()
             stale = [self._row_to_task(r) for r in rows]
             for task in stale:
+                new_status = "interrupted" if task.session_id else "failed"
                 conn.execute(
-                    "UPDATE tasks SET status = 'failed', updated_at = ? WHERE id = ?", (now(), task.id)
+                    "UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?", (new_status, now(), task.id)
                 )
+                task.status = new_status
                 conn.execute(
                     "UPDATE chat_state SET active_task_id = NULL WHERE chat_id = ? AND active_task_id = ?",
                     (task.chat_id, task.id),
                 )
+                conn.execute(
+                    "UPDATE chat_state SET parked_task_id = NULL WHERE chat_id = ? AND parked_task_id = ?",
+                    (task.chat_id, task.id),
+                )
             return stale
+
+    def find_resumable_task(self, chat_id: int, exclude_task_id: Optional[int] = None) -> Optional[Task]:
+        with self._connect() as conn:
+            r = conn.execute(
+                """SELECT * FROM tasks
+                   WHERE chat_id = ? AND status IN ('active', 'interrupted') AND id != ?
+                   ORDER BY updated_at DESC LIMIT 1""",
+                (chat_id, exclude_task_id or -1),
+            ).fetchone()
+            return self._row_to_task(r) if r else None
 
     def set_task_branch_and_worktree(self, task_id: int, branch: str, worktree_path: str) -> None:
         with self._connect() as conn:

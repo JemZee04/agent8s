@@ -11,12 +11,20 @@ model's context.
 Telegram ── aiogram bot ── SQLite (projects, tasks, session_id) ── git worktree ── claude -p / codex exec
 ```
 
-This is the Этап 0+1+2+3+4+5 slice: register or scaffold projects, run tasks
-in worktrees with live streamed progress, inspect diffs, approve (merge) or
-drop them, switch between agents, pull Jira context straight into a task,
-and get calendar reminders. No push/deploy — merges stay local. Task queueing
-and concurrent worktrees (the other half of Этап 5) aren't done — still one
-active task per chat at a time.
+This is the Этап 0+1+2+3+4+5 slice, plus self-maintenance on top: register or
+scaffold projects, run tasks in worktrees with live streamed progress,
+inspect diffs, approve (merge) or drop them, switch between agents, pull
+Jira context straight into a task, get calendar reminders, ask read-only
+questions without opening a task, and point the bot at diagnosing and fixing
+its own code. No push/deploy — merges stay local. Task queueing and
+concurrent worktrees (the other half of Этап 5) aren't done — still one
+active task per chat at a time (plus one *parked* task, see `/diagnose`
+below).
+
+**The bot's own Telegram UI (every command's replies) is in Russian** — this
+README stays in English as the technical reference; [README.ru.md](README.ru.md)
+is both the practical Russian guide and a closer match to what you'll
+actually see in the chat.
 
 ## Setup
 
@@ -95,6 +103,41 @@ the conversation instead of starting over.
   worktree. Local only — nothing is pushed anywhere.
 - `/drop` — discards the task: removes the worktree and branch.
 - `/status` — current project, agent, and active task for this chat.
+- `/continue` — see "Interrupted and parked tasks" below.
+
+## Ad hoc questions: /ask
+
+```
+/ask what's the auth flow in this project?
+/ask find every place we call the YandexGPT API
+```
+
+`/ask <text>` runs the current project's agent directly against the real
+checkout (no worktree, no branch, no task tracking) in a hard read-only
+mode — `--permission-mode plan` for claude, `-s read-only` for codex.
+Verified live: both refuse to write anything (claude explains it can't exit
+plan mode to apply an edit; codex's sandbox rejects the write outright), so
+this is safe to run against your actual working copy, not just a worktree.
+For anything that should actually change files, use free text (a real task)
+instead.
+
+## Interrupted and parked tasks: /continue
+
+Two situations leave a task off to the side instead of active or gone:
+
+- **Interrupted.** If the bot process dies mid-task (crash, force-kill) the
+  task can't have survived — on the next startup it's marked `interrupted`
+  (not `failed`) as long as it reached at least one turn and has a
+  `session_id`, since claude/codex persist that session to disk independent
+  of our process. `failed` instead means there's truly nothing to resume.
+- **Parked.** `/diagnose` (below) temporarily sets aside whatever task was
+  active so it can use the chat's task slot for a self-fix, without losing
+  track of what you were doing.
+
+`/continue` restores whichever applies: the chat's parked task if there is
+one, otherwise the most recently touched `active`/`interrupted` task for
+that chat. It re-attaches the task to the normal slot and shows its current
+diff stat — your next message continues it exactly like any other follow-up.
 
 ## Jira context
 
@@ -168,6 +211,48 @@ the tool call would just get silently denied since there's no one in
 headless mode to approve an unlisted tool. Codex has no equivalent mechanism
 today, so this only affects the `claude` agent.
 
+## Self-maintenance: /diagnose, /restart, /autostart
+
+```
+/diagnose bot got stuck for 17 hours with no error, task #3 status was "running" forever
+/restart
+/autostart on
+```
+
+`/diagnose [symptom]` points the bot at its own source: registers itself as
+a project (name `agent8s`, path resolved from `__file__` — no config needed)
+the first time it's used, and runs a normal task against it — worktree,
+branch, live progress, `/diff`, `/approve`, all the same machinery as any
+other task. It feeds the agent the tail of `data/bot.log` (rotating file
+handler, persisted across restarts — not just stdout, which disappears with
+the terminal) alongside your description, and tells it explicitly not to
+merge or restart on its own. If some other task was active for the chat, it
+gets *parked* (see `/continue` above) rather than blocked on or lost, so you
+can fix the bot without losing your place on whatever else you were doing.
+
+`/approve`-ing a self-fix only merges the branch — the running process is
+still executing the old code from memory (Python doesn't hot-reload).
+`/restart` re-execs the process in place (`os.execv`, same PID, keeps the
+singleton lock) so the merged change actually takes effect; it's a separate,
+explicit step on purpose — you decide when, not the moment a fix is merged.
+
+`/autostart on|off|status` wraps a macOS LaunchAgent
+(`~/Library/LaunchAgents/com.agent8s.bot.plist`, `RunAtLoad` + `KeepAlive`)
+so the bot survives logins and crashes without a terminal open — CLI
+equivalents are `scripts/install_launchagent.sh` /
+`scripts/uninstall_launchagent.sh`. **Known issue, not resolved**: on at
+least one machine, a process started *by launchd* hangs indefinitely during
+plain Python interpreter startup (stuck reading `.venv/pyvenv.cfg`, confirmed
+via `sample` on the stuck PID) — the exact same binary invoked identically
+but *not* through launchd starts in under a second. Strong suspicion is
+macOS TCC/sandboxing blocking file access under `~/Documents` for a
+LaunchAgent with no interactive consent context, but that's unconfirmed; the
+fix would be a manual System Settings → Privacy & Security grant, which
+can't be done non-interactively. Until this is root-caused, treat
+`/autostart` as installed-but-unverified and keep using `./scripts/run.sh`
+manually; `/restart` is unaffected (it re-execs an already-running,
+already-permitted process rather than a fresh launchd spawn).
+
 ## Adding another agent
 
 Subclass `AgentRunner` in `src/agent8s/agents/` (see `claude_agent.py` /
@@ -218,8 +303,10 @@ just fixing quietly:
   the task sits `running` forever and the chat stays blocked on it, with no
   failure ever reported. A `running` task cannot have survived past the
   process that started it, so on every startup any leftover `running` tasks
-  are marked `failed`, their chat's active task is cleared, and the affected
-  chats get a message explaining why.
+  are reconciled to `interrupted` (recoverable via `/continue` — see above)
+  or `failed` (no session ever came back, nothing to resume), their chat's
+  active task is cleared, and the affected chats get a message explaining
+  why.
 - Progress-update Telegram calls (`ProgressReporter`) now catch
   `TelegramAPIError` broadly instead of just `TelegramBadRequest` — a flood
   wave of tool-call updates hitting Telegram's edit rate limit could raise

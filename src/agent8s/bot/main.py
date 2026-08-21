@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import logging.handlers
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
@@ -16,24 +17,49 @@ from .reminders import reminder_loop
 logger = logging.getLogger(__name__)
 
 
+def _configure_logging(data_dir) -> None:
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    fmt = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+
+    console = logging.StreamHandler()
+    console.setFormatter(fmt)
+    root.addHandler(console)
+
+    # Persisted to disk (not just stdout) so /diagnose has something concrete
+    # to read after a restart — stdout alone disappears with the terminal.
+    file_handler = logging.handlers.RotatingFileHandler(
+        data_dir / "bot.log", maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"
+    )
+    file_handler.setFormatter(fmt)
+    root.addHandler(file_handler)
+
+
 async def _notify_stale_tasks(bot: Bot, db: Database) -> None:
     stale = db.reconcile_stale_running_tasks()
     for task in stale:
-        logger.warning("task #%s was stuck 'running' from a previous run — marked failed", task.id)
-        try:
-            await bot.send_message(
-                task.chat_id,
-                f"⚠️ task #{task.id} was still marked running from before the bot last restarted "
-                "(it can't have survived that) — marked failed and unblocked this chat. "
-                "Check the worktree/branch by hand if you need to know how far it got.",
+        logger.warning("task #%s was stuck 'running' from a previous run — marked %s", task.id, task.status)
+        if task.status == "interrupted":
+            text = (
+                f"⚠️ задача #{task.id} осталась в статусе «running» с прошлого запуска бота "
+                "(пережить рестарт она не могла) — отмечена как прерванная, чат разблокирован.\n"
+                "У неё есть сессия агента — можно продолжить: /continue"
             )
+        else:
+            text = (
+                f"⚠️ задача #{task.id} осталась в статусе «running» с прошлого запуска бота "
+                "(пережить рестарт она не могла) — помечена неуспешной, чат разблокирован.\n"
+                "Сессии агента нет, продолжить не получится — посмотри worktree/ветку вручную, если нужно понять, докуда дошло."
+            )
+        try:
+            await bot.send_message(task.chat_id, text)
         except Exception:
             logger.exception("failed to notify chat %s about stale task #%s", task.chat_id, task.id)
 
 
 async def _main() -> None:
-    logging.basicConfig(level=logging.INFO)
     config = load_config()
+    _configure_logging(config.data_dir)
     acquire_singleton_lock(config.data_dir)
     db = Database(config.db_path)
 
