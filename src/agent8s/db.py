@@ -178,6 +178,26 @@ class Database:
                 prompt=prompt,
             )
 
+    def reconcile_stale_running_tasks(self) -> list[Task]:
+        """Call once at startup. A task can only be 'running' during the
+        lifetime of the process that started its subprocess — any task still
+        marked 'running' when a fresh process starts belongs to a run that
+        never got to report back (crash, force-kill, unhandled exception),
+        and would otherwise sit stuck forever with the chat blocked on it.
+        """
+        with self._connect() as conn:
+            rows = conn.execute("SELECT * FROM tasks WHERE status = 'running'").fetchall()
+            stale = [self._row_to_task(r) for r in rows]
+            for task in stale:
+                conn.execute(
+                    "UPDATE tasks SET status = 'failed', updated_at = ? WHERE id = ?", (now(), task.id)
+                )
+                conn.execute(
+                    "UPDATE chat_state SET active_task_id = NULL WHERE chat_id = ? AND active_task_id = ?",
+                    (task.chat_id, task.id),
+                )
+            return stale
+
     def set_task_branch_and_worktree(self, task_id: int, branch: str, worktree_path: str) -> None:
         with self._connect() as conn:
             conn.execute(

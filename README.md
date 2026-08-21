@@ -191,6 +191,43 @@ the `ALLOWED_CHAT_IDS` whitelist:
   as a manual, separate step until that's deliberately wired up.
 - Only register projects (`/add_project`) you're fine having an LLM run
   shell commands against.
+- The worktree is where a task's own git diff comes from, not a filesystem
+  sandbox — `Bash`/`Edit`/`Write` can still follow an absolute path anywhere
+  the OS user can reach, worktree or not, if the prompt asks for it (e.g.
+  "also branch and edit the libs this depends on"). That's sometimes exactly
+  what you want, but it means such edits land directly in your real working
+  copy, outside `/diff` / `/approve` / `/drop` entirely — review a task's
+  prompt with that in mind before sending it.
+
+## Reliability
+
+A stuck-forever task on 2026-08-21 turned up two real bugs worth naming, not
+just fixing quietly:
+
+- **Single-instance lock.** Nothing stopped two `agent8s-bot` processes from
+  polling the same bot token at once (they did, four of them, accumulated
+  over a few days of restarting in new terminals without killing the old
+  one) — which is exactly the kind of thing that makes "why didn't this
+  work" impossible to debug from symptoms alone. Startup now takes an
+  exclusive flock on `<data dir>/bot.lock`; a second instance refuses to
+  start with a clear message instead of silently racing the first one for
+  updates.
+- **Startup reconciliation.** A task's status only ever left `running` when
+  its own handler coroutine finished — normally fine, but if that coroutine
+  dies without warning (crash, force-kill, an unhandled exception mid-run)
+  the task sits `running` forever and the chat stays blocked on it, with no
+  failure ever reported. A `running` task cannot have survived past the
+  process that started it, so on every startup any leftover `running` tasks
+  are marked `failed`, their chat's active task is cleared, and the affected
+  chats get a message explaining why.
+- Progress-update Telegram calls (`ProgressReporter`) now catch
+  `TelegramAPIError` broadly instead of just `TelegramBadRequest` — a flood
+  wave of tool-call updates hitting Telegram's edit rate limit could raise
+  `TelegramRetryAfter`, which used to propagate up and kill the task's
+  coroutine outright. And the `agent.start()`/`.resume()` call itself is now
+  wrapped so *any* unexpected exception becomes a normal failed result
+  instead of an unhandled crash — the whole point being that a task can no
+  longer die silently with nothing to show for it.
 
 ## Roadmap
 

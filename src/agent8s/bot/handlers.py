@@ -11,6 +11,7 @@ from aiogram.types import BufferedInputFile, Message
 
 from .. import atlassian, calendar_client, git_ops, scaffold
 from ..agents import AGENT_NAMES, build_agent
+from ..agents.base import AgentResult
 from ..config import Config
 from ..db import Database, Task
 from .progress import ProgressReporter
@@ -340,7 +341,7 @@ async def _run_new_task(
     db.set_active_task(message.chat.id, task.id)
 
     agent = build_agent(agent_name, config)
-    result = await agent.start(prompt, worktree_path, on_progress=reporter.update)
+    result = await _call_agent(agent.start, prompt, worktree_path, on_progress=reporter.update)
     await _finish_agent_turn(reporter, db, task, worktree_path, result)
 
 
@@ -353,8 +354,23 @@ async def _run_followup(message: Message, db: Database, config: Config, task: Ta
     await reporter.start()
 
     agent = build_agent(task.agent_name, config)
-    result = await agent.resume(task.session_id, message.text, worktree_path, on_progress=reporter.update)
+    result = await _call_agent(
+        agent.resume, task.session_id, message.text, worktree_path, on_progress=reporter.update
+    )
     await _finish_agent_turn(reporter, db, task, worktree_path, result)
+
+
+async def _call_agent(fn, *args, **kwargs):
+    # A task must never be left stuck "running" forever just because
+    # something unexpected blew up mid-stream (e.g. a Telegram API error
+    # while posting a progress update) — that leaves the chat permanently
+    # blocked with no failure ever reported. Whatever goes wrong here becomes
+    # a normal failed AgentResult instead of an exception that kills this
+    # coroutine silently.
+    try:
+        return await fn(*args, **kwargs)
+    except Exception as e:
+        return AgentResult(success=False, session_id=None, summary=f"unexpected error: {e}", raw_output="")
 
 
 async def _finish_agent_turn(reporter: ProgressReporter, db: Database, task: Task, worktree_path: Path, result) -> None:
@@ -363,6 +379,9 @@ async def _finish_agent_turn(reporter: ProgressReporter, db: Database, task: Tas
 
     if not result.success:
         db.update_task_status(task.id, "failed")
+        if not result.session_id:
+            # nothing to resume — don't leave the chat blocked on a dead task
+            db.set_active_task(task.chat_id, None)
         await reporter.finish(f"❌ task #{task.id} failed:\n{_truncate(result.summary or 'no output')}")
         return
 

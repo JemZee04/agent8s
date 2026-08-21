@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 from typing import Optional
 
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramAPIError
 from aiogram.types import Message
 
 MAX_LINES = 10
@@ -46,8 +46,13 @@ class ProgressReporter:
             return
         try:
             await self._sent.edit_text(text)
-        except TelegramBadRequest:
-            await self._origin.answer(text)
+        except TelegramAPIError:
+            # Covers flood control (TelegramRetryAfter) too, not just bad
+            # requests — this is the final result, it must land somewhere.
+            try:
+                await self._origin.answer(text)
+            except TelegramAPIError:
+                pass
 
     async def _flush(self) -> None:
         if self._sent is None:
@@ -55,8 +60,8 @@ class ProgressReporter:
         text = self._header + "\n\n" + "\n".join(self._lines)
         try:
             await self._sent.edit_text(_truncate(text))
-        except TelegramBadRequest:
-            pass  # e.g. "message is not modified" — harmless, next edit will land
+        except TelegramAPIError:
+            pass  # e.g. "message is not modified", or flood control — next edit will land
 
 
 def _truncate(text: str) -> str:
