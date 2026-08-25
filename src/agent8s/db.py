@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterator, Optional
 
@@ -43,6 +43,17 @@ CREATE TABLE IF NOT EXISTS sent_reminders (
     event_start TEXT NOT NULL,
     sent_at TEXT NOT NULL,
     PRIMARY KEY (event_uid, event_start)
+);
+
+CREATE TABLE IF NOT EXISTS yc_balance_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    checked_at TEXT NOT NULL,
+    balance REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS yc_balance_alerts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sent_at TEXT NOT NULL
 );
 """
 
@@ -275,6 +286,41 @@ class Database:
                 "INSERT OR IGNORE INTO sent_reminders (event_uid, event_start, sent_at) VALUES (?, ?, ?)",
                 (event_uid, event_start, now()),
             )
+
+    # -- yandex cloud balance --
+
+    def record_balance_snapshot(self, balance: float) -> None:
+        with self._connect() as conn:
+            conn.execute("INSERT INTO yc_balance_snapshots (checked_at, balance) VALUES (?, ?)", (now(), balance))
+
+    def get_balance_snapshot_near(self, target_hours_ago: float, tolerance_hours: float = 6) -> Optional[float]:
+        """Closest recorded balance to `target_hours_ago` hours before now,
+        within `tolerance_hours` — used to approximate spend over a period
+        without a real per-service consumption API."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=target_hours_ago + tolerance_hours)).isoformat()
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT checked_at, balance FROM yc_balance_snapshots WHERE checked_at >= ? ORDER BY checked_at ASC",
+                (cutoff,),
+            ).fetchall()
+        if not rows:
+            return None
+        target_time = datetime.now(timezone.utc) - timedelta(hours=target_hours_ago)
+        best = min(rows, key=lambda r: abs((datetime.fromisoformat(r["checked_at"]) - target_time).total_seconds()))
+        if abs((datetime.fromisoformat(best["checked_at"]) - target_time).total_seconds()) > tolerance_hours * 3600:
+            return None
+        return best["balance"]
+
+    def should_send_balance_alert(self, cooldown_hours: int) -> bool:
+        with self._connect() as conn:
+            r = conn.execute("SELECT sent_at FROM yc_balance_alerts ORDER BY sent_at DESC LIMIT 1").fetchone()
+        if r is None:
+            return True
+        return datetime.now(timezone.utc) - datetime.fromisoformat(r["sent_at"]) >= timedelta(hours=cooldown_hours)
+
+    def mark_balance_alert_sent(self) -> None:
+        with self._connect() as conn:
+            conn.execute("INSERT INTO yc_balance_alerts (sent_at) VALUES (?)", (now(),))
 
     @staticmethod
     def _row_to_task(r: sqlite3.Row) -> Task:

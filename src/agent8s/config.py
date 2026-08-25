@@ -32,6 +32,11 @@ class Config:
     caldav_password: Optional[str] = None
     reminder_lead_minutes: int = 15
     reminder_poll_seconds: int = 300
+    yc_service_account_key_file: Optional[Path] = None
+    yc_billing_account_id: Optional[str] = None
+    yc_balance_alert_threshold: Optional[float] = None
+    yc_balance_poll_seconds: int = 1800
+    yc_balance_alert_cooldown_hours: int = 12
 
     @property
     def db_path(self) -> Path:
@@ -44,6 +49,14 @@ class Config:
     @property
     def caldav_configured(self) -> bool:
         return bool(self.caldav_url and self.caldav_login and self.caldav_password)
+
+    @property
+    def yc_configured(self) -> bool:
+        return bool(
+            self.yc_service_account_key_file
+            and self.yc_service_account_key_file.exists()
+            and self.yc_billing_account_id
+        )
 
 
 def _split_csv(value: str) -> list[str]:
@@ -94,4 +107,19 @@ def load_config() -> Config:
         caldav_password=os.environ.get("YANDEX_CALDAV_PASSWORD", "").strip() or None,
         reminder_lead_minutes=int(os.environ.get("AGENT8S_REMINDER_LEAD_MINUTES", "15")),
         reminder_poll_seconds=int(os.environ.get("AGENT8S_REMINDER_POLL_SECONDS", "300")),
+        yc_service_account_key_file=_optional_path(os.environ.get("YC_SERVICE_ACCOUNT_KEY_FILE")),
+        yc_billing_account_id=os.environ.get("YC_BILLING_ACCOUNT_ID", "").strip() or None,
+        yc_balance_alert_threshold=_optional_float(os.environ.get("YC_BALANCE_ALERT_THRESHOLD")),
+        yc_balance_poll_seconds=int(os.environ.get("YC_BALANCE_POLL_SECONDS", "1800")),
+        yc_balance_alert_cooldown_hours=int(os.environ.get("YC_BALANCE_ALERT_COOLDOWN_HOURS", "12")),
     )
+
+
+def _optional_path(value: Optional[str]) -> Optional[Path]:
+    value = (value or "").strip()
+    return Path(value).expanduser().resolve() if value else None
+
+
+def _optional_float(value: Optional[str]) -> Optional[float]:
+    value = (value or "").strip()
+    return float(value) if value else None

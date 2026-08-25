@@ -211,6 +211,61 @@ while waiting for that to take effect.
 Leave the CalDAV variables blank to skip this entirely: `/today` says it's
 not configured, and the reminder loop exits immediately at startup.
 
+## Yandex Cloud billing
+
+```
+/balance
+```
+
+Researched this before building it — Yandex Cloud has no actual webhook
+mechanism for billing (Monitoring's alert channels are email/SMS/push/
+Telegram/Cloud Functions, not an arbitrary URL; the `Budget` resource's own
+notifications only reach Yandex Cloud user accounts, not external
+endpoints), and no live per-service consumption REST API either — a daily
+breakdown by service is only available via a CSV export to Object Storage,
+set up once in the console. Given that setup wasn't wanted for the first
+pass, this is balance-only: same polling-loop pattern as the calendar
+reminders, approximating spend from balance deltas over time instead of a
+real per-service breakdown.
+
+The Billing API needs a real IAM token, not a static API key (confirmed:
+Billing isn't among the services API keys work with), and Yandex's own docs
+say personal OAuth tokens aren't for automation — so this needs a **service
+account** with an **authorized key** (JWT-signed, PS256, exchanged for a
+~12h IAM token, auto-refreshed):
+
+1. Console → the cloud your billing account belongs to → Service accounts →
+   Create → grant it the `billing.accounts.viewer` role on the billing
+   account.
+2. That service account → Create new key → Create authorized key → download
+   the JSON file, drop it in `./data/` (gitignored) — matches
+   `YC_SERVICE_ACCOUNT_KEY_FILE`.
+3. Billing account ID is in the console URL / the Billing section.
+
+```
+YC_SERVICE_ACCOUNT_KEY_FILE=./data/yc-authorized-key.json
+YC_BILLING_ACCOUNT_ID=
+YC_BALANCE_ALERT_THRESHOLD=
+```
+
+Verified the JWT-signing and token-exchange mechanics live against the real
+`iam.api.cloud.yandex.net` endpoint (with a throwaway key pair, so the
+exchange itself correctly failed on an unknown subject) — the plumbing is
+right; a real service account key is what's needed to actually pull a
+balance.
+
+- `/balance` — current balance, plus spend/top-up over the last ~24h
+  (nearest recorded snapshot to 24h ago vs. now — an approximation, not a
+  ledger, since there's no per-transaction API).
+- Background loop polls every `YC_BALANCE_POLL_SECONDS` (default 1800),
+  records a snapshot, and messages every chat in `ALLOWED_CHAT_IDS` once
+  balance drops below `YC_BALANCE_ALERT_THRESHOLD` — at most once per
+  `YC_BALANCE_ALERT_COOLDOWN_HOURS` (default 12) so it nags, not spams,
+  while you're low.
+
+Leave `YC_SERVICE_ACCOUNT_KEY_FILE`/`YC_BILLING_ACCOUNT_ID` unset to skip
+entirely: `/balance` says so, and the loop exits immediately at startup.
+
 ## Skills
 
 `AGENT8S_CLAUDE_ALLOWED_TOOLS` includes `Skill` by default, so headless

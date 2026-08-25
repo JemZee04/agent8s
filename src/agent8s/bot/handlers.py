@@ -11,7 +11,7 @@ from aiogram import Router
 from aiogram.filters import Command, CommandObject
 from aiogram.types import BotCommand, BufferedInputFile, Message
 
-from .. import atlassian, calendar_client, git_ops, launchagent, scaffold, selfrepo
+from .. import atlassian, calendar_client, git_ops, launchagent, scaffold, selfrepo, yandexcloud
 from ..agents import AGENT_NAMES, build_agent
 from ..agents.base import AgentResult
 from ..config import Config
@@ -41,6 +41,7 @@ BOT_COMMANDS: list[tuple[str, str]] = [
     ("context", "Подтянуть тикет Jira в чат"),
     ("task", "Начать задачу по тикету Jira"),
     ("today", "События на сегодня из Яндекс.Календаря"),
+    ("balance", "Баланс Yandex Cloud и расход за сутки"),
     ("diagnose", "Диагностировать и починить сам бот"),
     ("improve", "Добавить или изменить возможность в самом боте"),
     ("restart", "Перезапустить бота (применить смерженный фикс)"),
@@ -75,6 +76,8 @@ async def cmd_start(message: Message) -> None:
         "/task <КЛЮЧ> [инструкции] — подтянуть тикет и начать по нему задачу\n\n"
         "Календарь:\n"
         "/today — сегодняшние события из Яндекс.Календаря\n\n"
+        "Yandex Cloud:\n"
+        "/balance — баланс и расход за сутки, алерт при падении ниже порога\n\n"
         "Сам бот:\n"
         "/diagnose [описание проблемы] — диагностировать и починить сам бот (отдельно от текущей задачи)\n"
         "/improve <что добавить/изменить> — доработать сам бот новой возможностью (та же механика, что у /diagnose)\n"
@@ -377,6 +380,36 @@ async def cmd_today(message: Message, config: Config) -> None:
     await message.answer(_truncate("\n".join(lines)))
 
 
+async def cmd_balance(message: Message, db: Database, config: Config) -> None:
+    if not config.yc_configured:
+        await message.answer("Yandex Cloud не настроен (нет YC_SERVICE_ACCOUNT_KEY_FILE / YC_BILLING_ACCOUNT_ID в .env).")
+        return
+
+    try:
+        balance = await asyncio.to_thread(yandexcloud.get_balance, config)
+    except yandexcloud.YandexCloudError as e:
+        await message.answer(f"Не удалось получить баланс: {e}")
+        return
+
+    db.record_balance_snapshot(balance)
+    lines = [f"Баланс Yandex Cloud: {balance:.2f}"]
+
+    day_ago = db.get_balance_snapshot_near(target_hours_ago=24)
+    if day_ago is not None:
+        spent = day_ago - balance
+        if spent >= 0:
+            lines.append(f"За последние ~сутки потрачено: {spent:.2f}")
+        else:
+            lines.append(f"За последние ~сутки баланс пополнен на: {-spent:.2f}")
+    else:
+        lines.append("Данных за сутки ещё нет — рано считать динамику, спроси позже.")
+
+    if config.yc_balance_alert_threshold is not None:
+        lines.append(f"Порог алерта: {config.yc_balance_alert_threshold:.2f}")
+
+    await message.answer("\n".join(lines))
+
+
 async def cmd_ask(message: Message, command: CommandObject, db: Database, config: Config) -> None:
     if not command.args:
         await message.answer("Использование: /ask <вопрос или поручение>")
@@ -642,6 +675,7 @@ def register_handlers() -> Router:
     router.message.register(cmd_context, Command("context"))
     router.message.register(cmd_task, Command("task"))
     router.message.register(cmd_today, Command("today"))
+    router.message.register(cmd_balance, Command("balance"))
     router.message.register(cmd_ask, Command("ask"))
     router.message.register(cmd_diagnose, Command("diagnose"))
     router.message.register(cmd_improve, Command("improve"))

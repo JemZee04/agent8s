@@ -13,6 +13,7 @@ from ..singleton import acquire_singleton_lock
 from .handlers import get_bot_commands, register_handlers
 from .middleware import AllowlistMiddleware
 from .reminders import reminder_loop
+from .yc_balance_loop import yc_balance_loop
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +75,7 @@ async def _main() -> None:
     await asyncio.gather(
         dp.start_polling(bot, db=db, config=config),
         reminder_loop(bot, db, config),
+        yc_balance_loop(bot, db, config),
     )
 
 
