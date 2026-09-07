@@ -133,18 +133,16 @@ note above), so this only matters for codex tasks.
 ```
 
 `codex exec resume` has no `--add-dir` (checked its `--help` directly — the
-option only exists on the initial `exec`, not `resume`), so a session's
-writable roots can't be widened after the fact. `/grant` works around this
-the only way that's actually possible: it records the directory against the
-task and marks it as needing a **fresh session** — the next message starts a
-new `codex exec` in the same worktree with `--add-dir` for the granted path,
-instead of resuming. All file state (worktree contents, git history, diff)
-carries over unchanged since that lives in the worktree, not in the codex
-session; only the agent's own conversational memory of prior turns resets.
-Verified live: denied without the grant, the exact same write succeeds
-immediately after. For claude, `/grant` still records the directory (passed
-along as `--add-dir` on the next call) but says so plainly — there's no
-sandbox being widened, since there wasn't one restricting it in the first
+option only exists on the initial `exec`, not `resume`), but its sandbox can
+still be widened per-call via `-c sandbox_workspace_write.writable_roots=[...]`
+— confirmed live that this *adds* to the default writable roots (cwd stays
+writable) rather than replacing them. `/grant` records the directory against
+the task; the very next message applies it, whether that message resumes the
+existing session or starts a new one — no session or conversational memory
+is lost. Verified live: denied without the grant, the exact same write
+succeeds immediately after. For claude, `/grant` still records the directory
+(passed along as `--add-dir` on the next call) but says so plainly — there's
+no sandbox being widened, since there wasn't one restricting it in the first
 place.
 
 Do **not** act on an agent's own suggestion to fix a permission denial by

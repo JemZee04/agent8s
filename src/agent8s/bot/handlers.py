@@ -282,17 +282,11 @@ async def cmd_grant(message: Message, command: CommandObject, db: Database) -> N
         # claude has no write sandbox to widen — --add-dir only affects what
         # it can discover (CLAUDE.md etc.), so nothing else to do here.
         db.add_task_extra_dir(task.id, resolved)
-        db.clear_task_needs_fresh_session(task.id)
         await message.answer(f"claude и так может писать куда угодно — добавил {resolved} просто для контекста.")
         return
 
     db.add_task_extra_dir(task.id, resolved)
-    await message.answer(
-        f"Разрешил запись в {resolved}. У codex `--add-dir` нельзя добавить к уже идущей сессии "
-        "(в CLI резюма такого флага нет) — следующее сообщение начнёт новую сессию codex в этом же "
-        "worktree с доступом к этой папке; весь файловый прогресс (worktree, diff) сохранится, "
-        "потеряется только память самого диалога."
-    )
+    await message.answer(f"Разрешил codex писать в {resolved} — учитывается со следующего сообщения, сессия и память диалога сохраняются.")
 
 
 async def cmd_continue(message: Message, db: Database) -> None:
@@ -640,7 +634,7 @@ async def _run_new_task(
 
 async def _run_followup(message: Message, db: Database, config: Config, task: Task, prompt: str | None = None) -> None:
     prompt = prompt if prompt is not None else message.text
-    if not task.needs_fresh_session and not task.session_id:
+    if not task.session_id:
         await message.answer("У активной задачи ещё нет сессии — попробуй чуть позже, либо /drop её.")
         return
 
@@ -649,21 +643,10 @@ async def _run_followup(message: Message, db: Database, config: Config, task: Ta
     await reporter.start()
 
     agent = build_agent(task.agent_name, config)
-    if task.needs_fresh_session:
-        # codex can't widen an existing session's sandbox via resume() (no
-        # such CLI option) — a granted directory (see cmd_grant) means
-        # starting a fresh session in the same worktree instead. All file
-        # state (worktree, diff) is preserved either way; only the agent's
-        # own conversational memory resets.
-        result = await _call_agent(
-            agent.start, prompt, worktree_path, on_progress=reporter.update, extra_dirs=task.extra_write_dirs
-        )
-        db.clear_task_needs_fresh_session(task.id)
-    else:
-        result = await _call_agent(
-            agent.resume, task.session_id, prompt, worktree_path,
-            on_progress=reporter.update, extra_dirs=task.extra_write_dirs,
-        )
+    result = await _call_agent(
+        agent.resume, task.session_id, prompt, worktree_path,
+        on_progress=reporter.update, extra_dirs=task.extra_write_dirs,
+    )
     await _finish_agent_turn(reporter, db, task, worktree_path, result)
 
 

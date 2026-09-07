@@ -41,13 +41,16 @@ class CodexAgent(AgentRunner):
         on_progress: Optional[ProgressCallback] = None,
         extra_dirs: Optional[list[str]] = None,
     ) -> AgentResult:
-        # codex exec resume has no --add-dir (confirmed against its --help):
-        # a session's writable roots are fixed at start() and can't be
-        # widened later. extra_dirs is accepted for interface symmetry but
-        # deliberately ignored here — callers that need a new directory
-        # granted mid-task must start() a fresh session in the same cwd
-        # instead (handlers.py does this via Task.needs_fresh_session).
+        # codex exec resume has no --add-dir (confirmed against its --help),
+        # but -c lets us override sandbox_workspace_write.writable_roots
+        # directly — confirmed live (codex 0.153.4) that this ADDS to the
+        # default writable roots (cwd stays writable) rather than replacing
+        # them. So extra dirs granted mid-task apply on every resumed call,
+        # not just the next fresh start.
         args = ["codex", "exec", "resume", session_id, "--json"]
+        if extra_dirs:
+            roots = ", ".join(json.dumps(d) for d in extra_dirs)
+            args.extend(["-c", f"sandbox_workspace_write.writable_roots=[{roots}]"])
         return await self._run(args, self._with_language_instruction(prompt), cwd, on_progress)
 
     @staticmethod

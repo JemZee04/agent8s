@@ -50,10 +50,7 @@ class AgentRunner(ABC):
         extra_dirs: additional absolute paths the agent may write to besides
         cwd itself. Agents without a real write sandbox (claude) ignore this
         — there's nothing to widen. Agents that do sandbox writes (codex)
-        apply it at session start; codex specifically can't widen it later
-        via resume() (its CLI has no such option), so granting a new
-        directory to an in-progress task means starting a fresh session in
-        the same cwd, not resuming — see handlers.py's use of needs_fresh_session.
+        apply it at session start via --add-dir.
         """
 
     @abstractmethod
@@ -67,8 +64,12 @@ class AgentRunner(ABC):
     ) -> AgentResult:
         """Continue a previous session (follow-up message) in cwd.
 
-        extra_dirs is accepted for interface symmetry with start() but has
-        no effect for agents that can't change a session's write sandbox
-        after the fact (codex) — callers needing that should start() a new
-        session instead.
+        extra_dirs: same as start() — additional writable paths. codex's
+        `exec resume` has no --add-dir flag, but its sandbox is still
+        widenable per-call via `-c sandbox_workspace_write.writable_roots=[...]`
+        (confirmed live: this adds to, not replaces, the default writable
+        roots, so cwd stays writable too). So unlike start()/resume in
+        general, this parameter is NOT just symmetry — codex actually
+        applies it on every resumed call, meaning a granted directory stays
+        writable for the rest of the task, not just the next turn.
         """

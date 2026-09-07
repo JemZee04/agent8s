@@ -28,7 +28,6 @@ CREATE TABLE IF NOT EXISTS tasks (
     status TEXT NOT NULL DEFAULT 'running',
     prompt TEXT NOT NULL,
     extra_write_dirs TEXT,
-    needs_fresh_session INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -85,7 +84,6 @@ class Task:
     status: str
     prompt: str
     extra_write_dirs: list[str] = field(default_factory=list)
-    needs_fresh_session: bool = False
 
 
 @dataclass
@@ -115,8 +113,6 @@ class Database:
         task_columns = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
         if "extra_write_dirs" not in task_columns:
             conn.execute("ALTER TABLE tasks ADD COLUMN extra_write_dirs TEXT")
-        if "needs_fresh_session" not in task_columns:
-            conn.execute("ALTER TABLE tasks ADD COLUMN needs_fresh_session INTEGER NOT NULL DEFAULT 0")
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -206,8 +202,8 @@ class Database:
             cur = conn.execute(
                 """INSERT INTO tasks
                    (project_id, chat_id, agent_name, branch, worktree_path, session_id, status, prompt,
-                    extra_write_dirs, needs_fresh_session, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, NULL, 'running', ?, NULL, 0, ?, ?)""",
+                    extra_write_dirs, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, NULL, 'running', ?, NULL, ?, ?)""",
                 (project_id, chat_id, agent_name, branch, worktree_path, prompt, now(), now()),
             )
             return Task(
@@ -284,24 +280,19 @@ class Database:
             conn.execute("UPDATE tasks SET session_id = ?, updated_at = ? WHERE id = ?", (session_id, now(), task_id))
 
     def add_task_extra_dir(self, task_id: int, path: str) -> list[str]:
-        """Grant an additional writable directory to a task, and mark it as
-        needing a fresh agent session — codex specifically can't widen an
-        existing session's sandbox via resume(), so the next turn has to
-        start() a new session in the same worktree instead (see agents/base.py)."""
+        """Grant an additional writable directory to a task. Applied on the
+        task's next agent call (start or resume — see agents/codex_agent.py's
+        use of extra_dirs)."""
         task = self.get_task(task_id)
         dirs = task.extra_write_dirs if task else []
         if path not in dirs:
             dirs = [*dirs, path]
         with self._connect() as conn:
             conn.execute(
-                "UPDATE tasks SET extra_write_dirs = ?, needs_fresh_session = 1, updated_at = ? WHERE id = ?",
+                "UPDATE tasks SET extra_write_dirs = ?, updated_at = ? WHERE id = ?",
                 (json.dumps(dirs), now(), task_id),
             )
         return dirs
-
-    def clear_task_needs_fresh_session(self, task_id: int) -> None:
-        with self._connect() as conn:
-            conn.execute("UPDATE tasks SET needs_fresh_session = 0, updated_at = ? WHERE id = ?", (now(), task_id))
 
     # -- reminders --
 
@@ -368,5 +359,4 @@ class Database:
             status=r["status"],
             prompt=r["prompt"],
             extra_write_dirs=json.loads(raw_dirs) if raw_dirs else [],
-            needs_fresh_session=bool(r["needs_fresh_session"]) if "needs_fresh_session" in r.keys() else False,
         )
