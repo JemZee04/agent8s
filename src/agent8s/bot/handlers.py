@@ -37,6 +37,7 @@ BOT_COMMANDS: list[tuple[str, str]] = [
     ("diff", "Diff активной задачи файлом"),
     ("approve", "Смержить активную задачу"),
     ("drop", "Отменить активную задачу"),
+    ("grant", "Разрешить агенту писать ещё в одну папку (для codex)"),
     ("continue", "Продолжить отложенную/прерванную задачу"),
     ("context", "Подтянуть тикет Jira в чат"),
     ("task", "Начать задачу по тикету Jira"),
@@ -70,6 +71,7 @@ async def cmd_start(message: Message) -> None:
         "/diff — полный diff активной задачи, файлом\n"
         "/approve — закоммитить и смержить активную задачу в основную ветку\n"
         "/drop — отменить активную задачу и её worktree\n"
+        "/grant <путь> — разрешить агенту писать ещё в одну папку (актуально для codex)\n"
         "/continue — вернуться к отложенной или прерванной задаче\n\n"
         "Jira / Confluence:\n"
         "/context <КЛЮЧ> — подтянуть описание тикета в чат\n"
@@ -256,6 +258,41 @@ async def cmd_drop(message: Message, db: Database) -> None:
     db.update_task_status(task.id, "dropped")
     db.set_active_task(message.chat.id, None)
     await message.answer(f"Задача #{task.id} ({task.branch}) отменена. Worktree удалён, изменения потеряны.")
+
+
+async def cmd_grant(message: Message, command: CommandObject, db: Database) -> None:
+    task = await _require_active_task(message, db)
+    if task is None:
+        return
+    if not command.args:
+        await message.answer("Использование: /grant <абсолютный путь>")
+        return
+
+    path = Path(command.args.strip()).expanduser()
+    if not path.is_absolute():
+        await message.answer(f"Нужен абсолютный путь, а не {path}.")
+        return
+    if not path.exists():
+        await message.answer(f"{path} не существует.")
+        return
+
+    resolved = str(path.resolve())
+
+    if task.agent_name != "codex":
+        # claude has no write sandbox to widen — --add-dir only affects what
+        # it can discover (CLAUDE.md etc.), so nothing else to do here.
+        db.add_task_extra_dir(task.id, resolved)
+        db.clear_task_needs_fresh_session(task.id)
+        await message.answer(f"claude и так может писать куда угодно — добавил {resolved} просто для контекста.")
+        return
+
+    db.add_task_extra_dir(task.id, resolved)
+    await message.answer(
+        f"Разрешил запись в {resolved}. У codex `--add-dir` нельзя добавить к уже идущей сессии "
+        "(в CLI резюма такого флага нет) — следующее сообщение начнёт новую сессию codex в этом же "
+        "worktree с доступом к этой папке; весь файловый прогресс (worktree, diff) сохранится, "
+        "потеряется только память самого диалога."
+    )
 
 
 async def cmd_continue(message: Message, db: Database) -> None:
@@ -595,23 +632,38 @@ async def _run_new_task(
     db.set_active_task(message.chat.id, task.id)
 
     agent = build_agent(agent_name, config)
-    result = await _call_agent(agent.start, prompt, worktree_path, on_progress=reporter.update)
+    result = await _call_agent(
+        agent.start, prompt, worktree_path, on_progress=reporter.update, extra_dirs=task.extra_write_dirs
+    )
     await _finish_agent_turn(reporter, db, task, worktree_path, result)
 
 
 async def _run_followup(message: Message, db: Database, config: Config, task: Task, prompt: str | None = None) -> None:
     prompt = prompt if prompt is not None else message.text
-    if not task.session_id:
+    if not task.needs_fresh_session and not task.session_id:
         await message.answer("У активной задачи ещё нет сессии — попробуй чуть позже, либо /drop её.")
         return
+
     worktree_path = Path(task.worktree_path)
     reporter = ProgressReporter(message, f"⏳ {task.agent_name} продолжает задачу #{task.id}...")
     await reporter.start()
 
     agent = build_agent(task.agent_name, config)
-    result = await _call_agent(
-        agent.resume, task.session_id, prompt, worktree_path, on_progress=reporter.update
-    )
+    if task.needs_fresh_session:
+        # codex can't widen an existing session's sandbox via resume() (no
+        # such CLI option) — a granted directory (see cmd_grant) means
+        # starting a fresh session in the same worktree instead. All file
+        # state (worktree, diff) is preserved either way; only the agent's
+        # own conversational memory resets.
+        result = await _call_agent(
+            agent.start, prompt, worktree_path, on_progress=reporter.update, extra_dirs=task.extra_write_dirs
+        )
+        db.clear_task_needs_fresh_session(task.id)
+    else:
+        result = await _call_agent(
+            agent.resume, task.session_id, prompt, worktree_path,
+            on_progress=reporter.update, extra_dirs=task.extra_write_dirs,
+        )
     await _finish_agent_turn(reporter, db, task, worktree_path, result)
 
 
@@ -671,6 +723,7 @@ def register_handlers() -> Router:
     router.message.register(cmd_diff, Command("diff"))
     router.message.register(cmd_approve, Command("approve"))
     router.message.register(cmd_drop, Command("drop"))
+    router.message.register(cmd_grant, Command("grant"))
     router.message.register(cmd_continue, Command("continue"))
     router.message.register(cmd_context, Command("context"))
     router.message.register(cmd_task, Command("task"))

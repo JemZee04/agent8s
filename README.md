@@ -117,6 +117,40 @@ the conversation instead of starting over.
 - `/drop` — discards the task: removes the worktree and branch.
 - `/status` — current project, agent, and active task for this chat.
 - `/continue` — see "Interrupted and parked tasks" below.
+- `/grant <path>` — see "Writable directories outside the worktree" below.
+
+## Writable directories outside the worktree: /grant
+
+codex actually sandboxes writes to `cwd` (`AGENT8S_CODEX_SANDBOX`,
+`workspace-write` by default) — confirmed live: a task asked to write
+outside its worktree got a real `operation not permitted` from the sandbox,
+not a hallucinated excuse. claude has no equivalent restriction (its Bash/
+Edit/Write tools follow any path the OS user can reach — see the security
+note above), so this only matters for codex tasks.
+
+```
+/grant /Users/you/go/src/some-other-service
+```
+
+`codex exec resume` has no `--add-dir` (checked its `--help` directly — the
+option only exists on the initial `exec`, not `resume`), so a session's
+writable roots can't be widened after the fact. `/grant` works around this
+the only way that's actually possible: it records the directory against the
+task and marks it as needing a **fresh session** — the next message starts a
+new `codex exec` in the same worktree with `--add-dir` for the granted path,
+instead of resuming. All file state (worktree contents, git history, diff)
+carries over unchanged since that lives in the worktree, not in the codex
+session; only the agent's own conversational memory of prior turns resets.
+Verified live: denied without the grant, the exact same write succeeds
+immediately after. For claude, `/grant` still records the directory (passed
+along as `--add-dir` on the next call) but says so plainly — there's no
+sandbox being widened, since there wasn't one restricting it in the first
+place.
+
+Do **not** act on an agent's own suggestion to fix a permission denial by
+running `codex resume` (or anything else) directly in a terminal — that
+bypasses agent8s's tracking entirely, and the bot's view of the task's
+session/diff state will drift from whatever actually happened on disk.
 
 ## Ad hoc questions: /ask
 

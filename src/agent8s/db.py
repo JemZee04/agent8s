@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterator, Optional
@@ -26,6 +27,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     session_id TEXT,
     status TEXT NOT NULL DEFAULT 'running',
     prompt TEXT NOT NULL,
+    extra_write_dirs TEXT,
+    needs_fresh_session INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -81,6 +84,8 @@ class Task:
     session_id: Optional[str]
     status: str
     prompt: str
+    extra_write_dirs: list[str] = field(default_factory=list)
+    needs_fresh_session: bool = False
 
 
 @dataclass
@@ -103,9 +108,15 @@ class Database:
     def _migrate(conn: sqlite3.Connection) -> None:
         # CREATE TABLE IF NOT EXISTS doesn't add columns to a table that
         # already existed before this column was introduced.
-        columns = {row["name"] for row in conn.execute("PRAGMA table_info(chat_state)")}
-        if "parked_task_id" not in columns:
+        chat_state_columns = {row["name"] for row in conn.execute("PRAGMA table_info(chat_state)")}
+        if "parked_task_id" not in chat_state_columns:
             conn.execute("ALTER TABLE chat_state ADD COLUMN parked_task_id INTEGER REFERENCES tasks(id)")
+
+        task_columns = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
+        if "extra_write_dirs" not in task_columns:
+            conn.execute("ALTER TABLE tasks ADD COLUMN extra_write_dirs TEXT")
+        if "needs_fresh_session" not in task_columns:
+            conn.execute("ALTER TABLE tasks ADD COLUMN needs_fresh_session INTEGER NOT NULL DEFAULT 0")
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -194,8 +205,9 @@ class Database:
         with self._connect() as conn:
             cur = conn.execute(
                 """INSERT INTO tasks
-                   (project_id, chat_id, agent_name, branch, worktree_path, session_id, status, prompt, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, NULL, 'running', ?, ?, ?)""",
+                   (project_id, chat_id, agent_name, branch, worktree_path, session_id, status, prompt,
+                    extra_write_dirs, needs_fresh_session, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, NULL, 'running', ?, NULL, 0, ?, ?)""",
                 (project_id, chat_id, agent_name, branch, worktree_path, prompt, now(), now()),
             )
             return Task(
@@ -271,6 +283,26 @@ class Database:
         with self._connect() as conn:
             conn.execute("UPDATE tasks SET session_id = ?, updated_at = ? WHERE id = ?", (session_id, now(), task_id))
 
+    def add_task_extra_dir(self, task_id: int, path: str) -> list[str]:
+        """Grant an additional writable directory to a task, and mark it as
+        needing a fresh agent session — codex specifically can't widen an
+        existing session's sandbox via resume(), so the next turn has to
+        start() a new session in the same worktree instead (see agents/base.py)."""
+        task = self.get_task(task_id)
+        dirs = task.extra_write_dirs if task else []
+        if path not in dirs:
+            dirs = [*dirs, path]
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE tasks SET extra_write_dirs = ?, needs_fresh_session = 1, updated_at = ? WHERE id = ?",
+                (json.dumps(dirs), now(), task_id),
+            )
+        return dirs
+
+    def clear_task_needs_fresh_session(self, task_id: int) -> None:
+        with self._connect() as conn:
+            conn.execute("UPDATE tasks SET needs_fresh_session = 0, updated_at = ? WHERE id = ?", (now(), task_id))
+
     # -- reminders --
 
     def was_reminded(self, event_uid: str, event_start: str) -> bool:
@@ -324,6 +356,7 @@ class Database:
 
     @staticmethod
     def _row_to_task(r: sqlite3.Row) -> Task:
+        raw_dirs = r["extra_write_dirs"] if "extra_write_dirs" in r.keys() else None
         return Task(
             id=r["id"],
             project_id=r["project_id"],
@@ -334,4 +367,6 @@ class Database:
             session_id=r["session_id"],
             status=r["status"],
             prompt=r["prompt"],
+            extra_write_dirs=json.loads(raw_dirs) if raw_dirs else [],
+            needs_fresh_session=bool(r["needs_fresh_session"]) if "needs_fresh_session" in r.keys() else False,
         )

@@ -38,11 +38,37 @@ class AgentRunner(ABC):
     name: str
 
     @abstractmethod
-    async def start(self, prompt: str, cwd: Path, on_progress: Optional[ProgressCallback] = None) -> AgentResult:
-        """Run a fresh session in cwd, reporting live steps via on_progress if given."""
+    async def start(
+        self,
+        prompt: str,
+        cwd: Path,
+        on_progress: Optional[ProgressCallback] = None,
+        extra_dirs: Optional[list[str]] = None,
+    ) -> AgentResult:
+        """Run a fresh session in cwd, reporting live steps via on_progress if given.
+
+        extra_dirs: additional absolute paths the agent may write to besides
+        cwd itself. Agents without a real write sandbox (claude) ignore this
+        — there's nothing to widen. Agents that do sandbox writes (codex)
+        apply it at session start; codex specifically can't widen it later
+        via resume() (its CLI has no such option), so granting a new
+        directory to an in-progress task means starting a fresh session in
+        the same cwd, not resuming — see handlers.py's use of needs_fresh_session.
+        """
 
     @abstractmethod
     async def resume(
-        self, session_id: str, prompt: str, cwd: Path, on_progress: Optional[ProgressCallback] = None
+        self,
+        session_id: str,
+        prompt: str,
+        cwd: Path,
+        on_progress: Optional[ProgressCallback] = None,
+        extra_dirs: Optional[list[str]] = None,
     ) -> AgentResult:
-        """Continue a previous session (follow-up message) in cwd."""
+        """Continue a previous session (follow-up message) in cwd.
+
+        extra_dirs is accepted for interface symmetry with start() but has
+        no effect for agents that can't change a session's write sandbox
+        after the fact (codex) — callers needing that should start() a new
+        session instead.
+        """

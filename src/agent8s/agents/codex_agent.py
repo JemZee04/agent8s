@@ -21,13 +21,32 @@ class CodexAgent(AgentRunner):
         self._sandbox = sandbox
         self._timeout_seconds = timeout_seconds
 
-    async def start(self, prompt: str, cwd: Path, on_progress: Optional[ProgressCallback] = None) -> AgentResult:
+    async def start(
+        self,
+        prompt: str,
+        cwd: Path,
+        on_progress: Optional[ProgressCallback] = None,
+        extra_dirs: Optional[list[str]] = None,
+    ) -> AgentResult:
         args = ["codex", "exec", "--json", "-s", self._sandbox]
+        for extra_dir in extra_dirs or []:
+            args.extend(["--add-dir", extra_dir])
         return await self._run(args, self._with_language_instruction(prompt), cwd, on_progress)
 
     async def resume(
-        self, session_id: str, prompt: str, cwd: Path, on_progress: Optional[ProgressCallback] = None
+        self,
+        session_id: str,
+        prompt: str,
+        cwd: Path,
+        on_progress: Optional[ProgressCallback] = None,
+        extra_dirs: Optional[list[str]] = None,
     ) -> AgentResult:
+        # codex exec resume has no --add-dir (confirmed against its --help):
+        # a session's writable roots are fixed at start() and can't be
+        # widened later. extra_dirs is accepted for interface symmetry but
+        # deliberately ignored here — callers that need a new directory
+        # granted mid-task must start() a fresh session in the same cwd
+        # instead (handlers.py does this via Task.needs_fresh_session).
         args = ["codex", "exec", "resume", session_id, "--json"]
         return await self._run(args, self._with_language_instruction(prompt), cwd, on_progress)
 

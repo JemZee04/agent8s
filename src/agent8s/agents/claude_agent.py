@@ -29,18 +29,29 @@ class ClaudeAgent(AgentRunner):
         self._permission_mode = permission_mode
         self._timeout_seconds = timeout_seconds
 
-    async def start(self, prompt: str, cwd: Path, on_progress: Optional[ProgressCallback] = None) -> AgentResult:
-        args = self._base_args(prompt)
+    async def start(
+        self,
+        prompt: str,
+        cwd: Path,
+        on_progress: Optional[ProgressCallback] = None,
+        extra_dirs: Optional[list[str]] = None,
+    ) -> AgentResult:
+        args = self._base_args(prompt, extra_dirs)
         return await self._run(args, cwd, on_progress)
 
     async def resume(
-        self, session_id: str, prompt: str, cwd: Path, on_progress: Optional[ProgressCallback] = None
+        self,
+        session_id: str,
+        prompt: str,
+        cwd: Path,
+        on_progress: Optional[ProgressCallback] = None,
+        extra_dirs: Optional[list[str]] = None,
     ) -> AgentResult:
-        args = self._base_args(prompt)
+        args = self._base_args(prompt, extra_dirs)
         args.extend(["--resume", session_id])
         return await self._run(args, cwd, on_progress)
 
-    def _base_args(self, prompt: str) -> list[str]:
+    def _base_args(self, prompt: str, extra_dirs: Optional[list[str]]) -> list[str]:
         # prompt must precede --allowedTools: it's a variadic flag and will
         # swallow the next bare token (including the prompt) as a tool name.
         args = [
@@ -51,6 +62,13 @@ class ClaudeAgent(AgentRunner):
         ]
         if self._allowed_tools:
             args.extend(["--allowedTools", ",".join(self._allowed_tools)])
+        # claude's Edit/Write/Bash tools aren't actually sandboxed to cwd
+        # (unlike codex's), so this isn't required for write access — but
+        # --add-dir also affects what's discoverable (e.g. CLAUDE.md) and
+        # costs nothing to pass along when a task explicitly names a dir it
+        # needs.
+        for extra_dir in extra_dirs or []:
+            args.extend(["--add-dir", extra_dir])
         return args
 
     async def _run(self, args: list[str], cwd: Path, on_progress: Optional[ProgressCallback]) -> AgentResult:
