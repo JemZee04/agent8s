@@ -185,6 +185,73 @@ Needs no Telegram credentials; it shares the database and the project list with 
 Not done yet: importing existing terminal sessions from `~/.claude` / `~/.codex`, LLM-written
 handoff summaries (the transcript is truncated, not summarised), queuing a message while an agent works.
 
+## Phone
+
+The phone shows the same chats and projects as the desktop app and drives the same agents. It is a
+PWA (the desktop UI in a mobile layout), so there is nothing to build or sign: open a link in Safari
+and add it to the Home Screen.
+
+```
+iPhone (Safari / Home Screen app) --WSS--> relay on your server <--WSS-- Mac (agent8s-desktop)
+              \_____________ end-to-end encrypted, the relay only forwards bytes _____________/
+```
+
+Both sides connect **outbound** over ordinary HTTPS (port 443), so it works behind home NAT and on
+mobile networks that block SSH; at home it uses the same path, there is no separate LAN mode.
+
+**Set up the relay** (once). It is one small container behind the nginx you already run:
+
+1. Deploy it: `PROXY_NETWORK=<docker network of your nginx> relay/deploy.sh <ssh host>`
+   (builds the UI, copies it with `server.py`, runs `docker compose up`; no port is published on the host).
+2. Route a path to it in that nginx (inside the `server { listen 443 ssl; }` block):
+
+```nginx
+# in http { }
+map $http_upgrade $connection_upgrade { default upgrade; '' close; }
+limit_req_zone  $binary_remote_addr zone=agent8s:1m rate=30r/s;
+limit_conn_zone $binary_remote_addr zone=agent8s_conn:1m;
+
+# in server { }
+location = /agent8s { return 308 /agent8s/; }
+location ^~ /agent8s/ {
+    resolver 127.0.0.11 valid=10s ipv6=off;       # resolved per request: nginx still starts if the relay is down
+    set $agent8s_relay http://agent8s-relay:8765;
+    proxy_pass $agent8s_relay;
+    limit_req zone=agent8s burst=60 nodelay;
+    limit_conn agent8s_conn 40;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $connection_upgrade;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_read_timeout 3600s;
+    proxy_send_timeout 3600s;
+    proxy_buffering off;
+}
+```
+
+**Pair a phone:** set `AGENT8S_RELAY_URL=https://your.domain/agent8s` in `.env`, open the desktop app, click
+"Phone", create the QR code, scan it with the iPhone camera and open the link in Safari. To install it as an
+app, tap "Copy key" on the page that appears, then Share → Add to Home Screen, open it and tap "Paste key"
+(iOS keeps Home Screen apps' storage separate from Safari, so the key has to be handed over once).
+While pairing is enabled the app keeps the Mac from idle-sleeping (`caffeinate`); the desktop app must be
+running (`agent8s-desktop --no-window` is enough).
+
+**Security model.** The pairing key is 32 random bytes shown only in the QR code. From it both sides derive
+the rendezvous id and an AES-256-GCM key (HKDF-SHA256); the relay sees neither. Frames bind direction and room
+into the authenticated data, every request carries a per-connection nonce issued by the Mac and a strictly
+increasing counter (captured frames cannot be replayed, even after a restart), and the Mac only forwards a fixed
+list of `/api/...` endpoints. A compromised relay can drop or delay traffic but cannot read or forge it. The
+room id travels in the first WebSocket message, not in the URL, so it is absent from access logs. In the
+browser the key is a non-extractable `CryptoKey` in IndexedDB. Caveat: if the relay shares an origin with
+other sites on the same domain (a path, not a subdomain), a script injected into one of *those* pages could
+use the key; serving the relay on its own subdomain removes that. "New QR code" rotates the key and
+disconnects every phone; "Disconnect" deletes it. Anyone holding the QR code can run agents on your Mac:
+treat it like an SSH key.
+
+Not done yet: a direct same-network mode, push notifications (iOS limits them for Home Screen web apps),
+starting `agent8s-desktop` automatically at login.
+
 ## Ad hoc questions: /ask
 
 ```

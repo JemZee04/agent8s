@@ -71,6 +71,9 @@
   {#if chat}
     <header>
       <div class="row1">
+        {#if app.mobile}
+          <button class="ghost back" aria-label="К списку чатов" onclick={() => (app.mobileView = 'list')}>‹</button>
+        {/if}
         {#if editing}
           <!-- svelte-ignore a11y_autofocus -->
           <input type="text" class="title-edit" bind:value={titleDraft} autofocus onblur={saveTitle}
@@ -86,9 +89,11 @@
             <button class="ghost" aria-label="Ещё" onclick={(e) => { e.stopPropagation(); menu = !menu; }}>⋯</button>
             {#if menu}
               <div class="menu" role="menu" tabindex="-1" onclick={(e) => e.stopPropagation()} onkeydown={() => {}}>
-                <button role="menuitem" onclick={() => { menu = false; void openFolder('finder'); }}>Показать в Finder</button>
-                <button role="menuitem" onclick={() => { menu = false; void openFolder('terminal'); }}>Открыть в Терминале</button>
-                <button role="menuitem" onclick={() => { menu = false; void openFolder('code'); }}>Открыть в VS Code</button>
+                {#if !app.relayMode}
+                  <button role="menuitem" onclick={() => { menu = false; void openFolder('finder'); }}>Показать в Finder</button>
+                  <button role="menuitem" onclick={() => { menu = false; void openFolder('terminal'); }}>Открыть в Терминале</button>
+                  <button role="menuitem" onclick={() => { menu = false; void openFolder('code'); }}>Открыть в VS Code</button>
+                {/if}
                 <button role="menuitem" onclick={addDir}>Разрешить запись в папку…</button>
                 <hr />
                 <button role="menuitem" class="danger" disabled={chat.running} onclick={() => { menu = false; void deleteChat(chat); }}>Удалить чат…</button>
@@ -105,7 +110,7 @@
         <button class="chip click path" onclick={() => copy(chat.worktree_path, 'Путь')} title="{chat.worktree_path} — нажмите, чтобы скопировать">
           {shortPath(chat.worktree_path)}
         </button>
-        <button class="chip click" onclick={() => openFolder('finder')}>Открыть папку</button>
+        {#if !app.relayMode}<button class="chip click" onclick={() => openFolder('finder')}>Открыть папку</button>{/if}
         {#each chat.extra_dirs as d (d)}<span class="chip" title="Разрешена запись">＋ {shortPath(d)}</span>{/each}
       </div>
     </header>
@@ -138,7 +143,8 @@
 
 <style>
   main { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--bg); }
-  header { border-bottom: 1px solid var(--border); padding: 10px 16px 8px 20px; }
+  header { border-bottom: 1px solid var(--border); padding: max(10px, env(safe-area-inset-top)) 16px 8px 20px; }
+  .back { font-size: 26px; line-height: 1; padding: 0 10px 2px; margin-left: -12px; flex: none; }
   .row1 { display: flex; align-items: center; gap: 12px; justify-content: space-between; }
   .title, .title-edit { font-size: 15px; font-weight: 600; border: 0; background: transparent; padding: 2px 6px; margin-left: -6px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; border-radius: 6px; }
   .title:hover { background: var(--bg-hover); }
@@ -163,4 +169,12 @@
   .empty { margin: auto; text-align: center; max-width: 420px; padding: 0 20px; }
   .empty h2 { font-size: 24px; margin: 0 0 8px; }
   .empty p { color: var(--text-dim); line-height: 1.5; margin: 0 0 18px; }
+  @media (max-width: 760px) {
+    header { padding-left: 14px; padding-right: 10px; }
+    .row2 { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+    .row2::-webkit-scrollbar { display: none; }
+    .chip { flex: none; }
+    .content { padding: 4px 14px 16px; }
+    .title { font-size: 16px; }
+  }
 </style>

@@ -6,6 +6,9 @@
   import ConfirmDialog from './ConfirmDialog.svelte';
   import DiffPanel from './DiffPanel.svelte';
   import NewChat from './NewChat.svelte';
+  import PairedSheet from './PairedSheet.svelte';
+  import PhonePairing from './PhonePairing.svelte';
+  import Unpaired from './Unpaired.svelte';
   import Sidebar from './Sidebar.svelte';
   import Toast from './Toast.svelte';
 
@@ -20,7 +23,15 @@
     return Math.min(Math.max(w, 340), Math.max(380, window.innerWidth - 640));
   }
 
-  onMount(start);
+  onMount(() => {
+    // One bundle, two shapes: a single-pane stack on phones, three panes on a desktop window.
+    const mq = window.matchMedia('(max-width: 760px)');
+    const sync = () => (app.mobile = mq.matches);
+    sync();
+    mq.addEventListener('change', sync);
+    start();
+    return () => mq.removeEventListener('change', sync);
+  });
 
   function onKey(e: KeyboardEvent) {
     if (!(e.metaKey || e.ctrlKey)) return;
@@ -78,23 +89,37 @@
 
 <svelte:window onkeydown={onKey} onclick={onClick} />
 
-<div class="shell" class:dragging style:grid-template-columns={app.diffOpen && app.selectedId !== null ? `264px minmax(0, 1fr) ${diffWidth}px` : '264px minmax(0, 1fr)'}>
-  <Sidebar />
-  <ChatView />
-  {#if app.diffOpen && app.selectedId !== null}
-    <div class="diffwrap">
-      <div class="grip" role="separator" aria-orientation="vertical" tabindex="-1" onpointerdown={drag}></div>
-      <DiffPanel />
-    </div>
-  {/if}
-</div>
+{#if app.needsPairing}
+  <Unpaired />
+{:else}
+  <div
+    class="shell"
+    class:mobile={app.mobile}
+    class:dragging
+    style:grid-template-columns={app.mobile ? null : app.diffOpen && app.selectedId !== null ? `264px minmax(0, 1fr) ${diffWidth}px` : '264px minmax(0, 1fr)'}
+  >
+    {#if !app.mobile || app.mobileView === 'list'}<Sidebar />{/if}
+    {#if !app.mobile || app.mobileView === 'chat'}<ChatView />{/if}
+    {#if app.diffOpen && app.selectedId !== null}
+      <div class="diffwrap" class:overlay={app.mobile}>
+        {#if !app.mobile}<div class="grip" role="separator" aria-orientation="vertical" tabindex="-1" onpointerdown={drag}></div>{/if}
+        <DiffPanel />
+      </div>
+    {/if}
+  </div>
+{/if}
 
 {#if app.newChatOpen}<NewChat />{/if}
+{#if app.phoneDialogOpen}<PhonePairing />{/if}
+{#if app.freshPairLink}<PairedSheet />{/if}
 <ConfirmDialog />
 <Toast />
 
 <style>
-  .shell { display: grid; height: 100vh; }
+  .shell { display: grid; height: 100vh; height: 100dvh; }
+  .shell.mobile { display: block; }
+  .shell.mobile > :global(aside), .shell.mobile > :global(main) { height: 100%; }
+  .diffwrap.overlay { position: fixed; inset: 0; z-index: 30; background: var(--bg); }
   .shell.dragging { cursor: col-resize; user-select: none; }
   .diffwrap { position: relative; display: flex; min-width: 0; min-height: 0; }
   .diffwrap > :global(aside) { flex: 1; min-width: 0; }

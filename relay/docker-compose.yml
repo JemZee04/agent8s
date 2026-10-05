@@ -1,0 +1,18 @@
+# Runs next to an existing reverse proxy (nginx) that terminates TLS and shares
+# this Docker network. The relay publishes no host port: only the proxy can reach it.
+services:
+  relay:
+    build: .
+    container_name: agent8s-relay
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 128m
+    pids_limit: 128
+    networks: [proxy]
+
+networks:
+  proxy:
+    external: true
+    name: ${PROXY_NETWORK:?set PROXY_NETWORK to the Docker network your nginx is on}

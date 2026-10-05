@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { app, ask, diff, gitAction, refreshDiff, selectedChat } from './lib/state.svelte';
+  import { app, ask, diff, gitAction, refreshDiff, selectedChat, toggleDiff } from './lib/state.svelte';
 
   const chat = $derived(selectedChat());
   const totals = $derived({
@@ -50,6 +50,7 @@
 <aside>
   <header>
     <div class="ttl">
+      {#if app.mobile}<button class="ghost back" aria-label="Назад к чату" onclick={toggleDiff}>‹</button>{/if}
       <b>Изменения</b>
       {#if diff.files.length}
         <span class="sum"><span class="a">+{totals.add}</span> <span class="d">−{totals.del}</span> · {diff.files.length} файл.</span>
@@ -112,13 +113,14 @@
 
 <style>
   aside { display: flex; flex-direction: column; min-height: 0; background: var(--bg); border-left: 1px solid var(--border); }
-  header { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px 6px 16px; }
+  header { display: flex; align-items: center; justify-content: space-between; padding: max(10px, env(safe-area-inset-top)) 12px 6px 16px; }
+  .back { font-size: 26px; line-height: 1; padding: 0 10px 2px; margin-left: -12px; align-self: center; }
   .ttl { display: flex; align-items: baseline; gap: 10px; }
   .sum { color: var(--text-dim); font-size: 12px; }
   .a { color: var(--ok); } .d { color: var(--err); }
   .actions { display: flex; gap: 6px; padding: 0 14px 10px; align-items: center; }
   .actions input { flex: 1; }
-  .files { flex: 1; overflow: auto; padding: 0 0 20px; }
+  .files { flex: 1; overflow: auto; padding: 0 0 max(20px, env(safe-area-inset-bottom)); }
   .msg { color: var(--text-dim); padding: 10px 16px; font-size: 12.5px; }
   .msg.err { color: var(--err); }
   section { border-top: 1px solid var(--border); }

@@ -122,4 +122,9 @@
   .radio input { margin-top: 3px; }
   .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
   select { min-width: 200px; }
+  @media (max-width: 760px) {
+    .scrim { place-items: end center; }
+    .dialog { width: 100%; max-height: 92dvh; border-radius: 18px 18px 0 0; padding-bottom: max(20px, env(safe-area-inset-bottom)); }
+    select, input[type='text'] { font-size: 16px; }
+  }
 </style>

@@ -16,6 +16,7 @@ from aiohttp import web
 from ..config import load_desktop_config
 from ..db import Database
 from ..singleton import AlreadyRunningError, acquire_singleton_lock
+from .remote import RemoteManager
 from .runner import Hub, Orchestrator
 from .server import create_app
 from .store import Store
@@ -113,7 +114,8 @@ def main(argv: list[str] | None = None) -> int:
     sock = _bind(args.port)
     port = sock.getsockname()[1]
     token = args.token or secrets.token_urlsafe(32)
-    app = create_app(config, db, orch, hub, token, port, args.allow_origin)
+    remote = RemoteManager(config.data_dir, hub, port, token, os.environ.get("AGENT8S_RELAY_URL", "").strip() or None)
+    app = create_app(config, db, orch, hub, token, port, args.allow_origin, remote)
 
     server = ServerThread(orch, app, sock)
     server.start()

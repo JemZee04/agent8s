@@ -1,10 +1,18 @@
-import { api, ApiError, connect } from './api';
+import { api, ApiError, connect, relayMode, setRelay } from './api';
 import { parseDiff, type DiffFile } from './diff';
+import { forgetKeys, loadKeys, pairFromText, RelayTransport, type LinkState } from './relay';
 import type { AgentSpec, Chat, Message, Project, ServerEvent } from './types';
 
 export const app = $state({
   ready: false,
   online: false,
+  link: 'connecting' as LinkState,
+  relayMode,
+  needsPairing: false,
+  mobile: false,
+  mobileView: 'list' as 'list' | 'chat',
+  phoneDialogOpen: false,
+  freshPairLink: '',
   agents: [] as AgentSpec[],
   projects: [] as Project[],
   chats: [] as Chat[],
@@ -99,11 +107,13 @@ async function bootstrap() {
   app.agents = data.catalog.agents;
   app.projects = data.projects;
   app.chats = data.chats;
-  app.ready = true;
   const remembered = Number(store.get('agent8s-selected'));
   const target = app.chats.find((c) => c.id === (app.selectedId ?? remembered)) ?? sorted()[0];
+  const showList = !app.ready || app.selectedId === null;
   if (target) await select(target.id);
   else app.selectedId = null;
+  if (app.mobile && showList) app.mobileView = 'list';
+  app.ready = true;
 }
 
 export function sorted(): Chat[] {
@@ -126,6 +136,7 @@ export function groups(): Group[] {
 
 export async function select(id: number) {
   app.selectedId = id;
+  app.mobileView = 'chat';
   delete app.unread[id];
   store.set('agent8s-selected', String(id));
   if (diff.chatId !== id) { diff.files = []; diff.status = ''; diff.error = ''; diff.chatId = id; }
@@ -212,18 +223,77 @@ function apply(ev: ServerEvent) {
   }
 }
 
+let transport: RelayTransport | null = null;
+
+// (Re)synchronise: anything may have happened while we were away.
+function resync() {
+  for (const id of Object.keys(app.messages)) delete app.messages[Number(id)];
+  void bootstrap().catch(fail);
+}
+
 export function start() {
   window.setInterval(() => (app.now = Date.now()), 1000);
+  if (relayMode) {
+    void startRelay();
+    return;
+  }
   connect(
     enqueue,
     () => {
       app.online = true;
-      // (Re)synchronise: anything may have happened while we were away.
-      for (const id of Object.keys(app.messages)) delete app.messages[Number(id)];
-      void bootstrap().catch(fail);
+      app.link = 'online';
+      resync();
     },
-    () => (app.online = false),
+    () => {
+      app.online = false;
+      app.link = 'connecting';
+    },
   );
+}
+
+// Phone: pair from a link in the URL fragment, a pasted key, or the key stored earlier.
+async function startRelay(pasted?: string) {
+  let keys = null;
+  try {
+    if (pasted) keys = await pairFromText(pasted);
+    else if (/[#&]k=/.test(location.hash)) {
+      keys = await pairFromText(location.hash);
+      app.freshPairLink = location.href; // shown once so the key can be handed to the home-screen app
+      history.replaceState(null, '', location.pathname + location.search); // the key must not linger in the address bar
+    } else keys = await loadKeys();
+  } catch (e) {
+    fail(e);
+  }
+  if (!keys) {
+    app.needsPairing = true;
+    return;
+  }
+  app.needsPairing = false;
+  transport?.stop();
+  transport = new RelayTransport(keys, {
+    event: enqueue,
+    open: resync,
+    close: () => (app.online = false),
+    state: (state) => {
+      app.link = state;
+      app.online = state === 'online';
+    },
+  });
+  setRelay(transport);
+  transport.start();
+}
+
+export const pairWith = (text: string) => startRelay(text);
+
+export async function unpair() {
+  transport?.stop();
+  transport = null;
+  setRelay(null);
+  await forgetKeys();
+  app.chats = [];
+  app.selectedId = null;
+  app.ready = false;
+  app.needsPairing = true;
 }
 
 // -- actions ----------------------------------------------------------------------
@@ -335,6 +405,56 @@ export async function addWritableDir(path: string) {
   try {
     upsertChat(await api.post<Chat>(`/api/chats/${app.selectedId}/dirs`, { path }));
     notify(`Агент сможет писать в ${path}`, 'info');
+  } catch (e) {
+    fail(e);
+  }
+}
+
+// -- phone pairing (desktop side) ---------------------------------------------------
+
+export interface RemoteInfo {
+  configured: boolean;
+  relay: string | null;
+  state: string;
+  error: string;
+  clients: number;
+}
+
+export const remote = $state({ info: null as RemoteInfo | null, url: '', svg: '', busy: false });
+
+export async function refreshRemote() {
+  try {
+    remote.info = await api.get<RemoteInfo>('/api/remote');
+    if (remote.info.configured && !remote.url) await loadPairing();
+  } catch (e) {
+    fail(e);
+  }
+}
+
+async function loadPairing() {
+  const r = await api.get<{ url: string; svg: string }>('/api/remote/pairing');
+  remote.url = r.url;
+  remote.svg = r.svg;
+}
+
+export async function pairPhone(relay: string) {
+  remote.busy = true;
+  try {
+    remote.info = await api.post<RemoteInfo>('/api/remote/pair', { relay });
+    await loadPairing();
+  } catch (e) {
+    fail(e);
+  } finally {
+    remote.busy = false;
+  }
+}
+
+export async function disablePhone() {
+  try {
+    await api.del('/api/remote');
+    remote.url = '';
+    remote.svg = '';
+    await refreshRemote();
   } catch (e) {
     fail(e);
   }

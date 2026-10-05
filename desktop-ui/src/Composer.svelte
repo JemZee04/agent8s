@@ -31,8 +31,11 @@
     if (!(await send(text))) app.drafts[chat.id] = text;
   }
 
+  // On a touch screen Enter is a line break (there is a Send button); on a keyboard it sends.
+  const touch = window.matchMedia('(pointer: coarse)').matches;
+
   function onKey(e: KeyboardEvent) {
-    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && !touch) {
       e.preventDefault();
       void submit();
     }
@@ -61,18 +64,23 @@
   <div class="foot">
     <AgentPicker agent={chat.agent} model={chat.model} effort={chat.effort} disabled={chat.running}
       onchange={(patch) => patchChat(chat.id, patch)} />
-    <span class="keys">Enter — отправить · Shift+Enter — новая строка</span>
+    {#if !touch}<span class="keys">Enter — отправить · Shift+Enter — новая строка</span>{/if}
   </div>
 </div>
 
 <style>
-  .composer { padding: 6px 20px 12px; }
+  .composer { padding: 6px 20px max(12px, env(safe-area-inset-bottom)); min-width: 0; }
   .handover { font-size: 12px; color: var(--text-dim); background: var(--accent-soft); border-radius: 8px; padding: 6px 11px; margin-bottom: 7px; }
-  .box { display: flex; align-items: flex-end; gap: 8px; background: var(--bg-elev); border: 1px solid var(--border); border-radius: 12px; padding: 7px 8px 7px 12px; }
+  .box { min-width: 0; display: flex; align-items: flex-end; gap: 8px; background: var(--bg-elev); border: 1px solid var(--border); border-radius: 12px; padding: 7px 8px 7px 12px; }
   .box:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
-  textarea { flex: 1; border: 0; outline: 0; resize: none; background: transparent; line-height: 1.5; padding: 4px 0; max-height: 40vh; user-select: text; }
+  textarea { flex: 1; min-width: 0; width: 100%; border: 0; outline: 0; resize: none; background: transparent; line-height: 1.5; padding: 4px 0; max-height: 40vh; user-select: text; }
   .send, .stop { flex: none; height: 30px; }
   .stop { background: var(--err); color: #fff; border: 0; border-radius: 7px; padding: 0 14px; font-weight: 500; }
   .foot { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; color: var(--text-faint); font-size: 11.5px; padding: 7px 2px 0; }
   .keys { margin-left: auto; }
+  @media (max-width: 760px) {
+    .composer { padding-left: 10px; padding-right: 10px; }
+    textarea { font-size: 16px; }
+    .send, .stop { height: 36px; padding: 0 16px; }
+  }
 </style>

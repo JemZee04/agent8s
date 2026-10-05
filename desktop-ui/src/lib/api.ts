@@ -1,4 +1,8 @@
+import { ApiError } from './errors';
+import type { RelayTransport } from './relay';
 import type { ServerEvent } from './types';
+
+export { ApiError };
 
 const KEY = 'agent8s-token';
 
@@ -16,11 +20,17 @@ function readToken(): string {
 
 export const token = readToken();
 
-export class ApiError extends Error {
-  constructor(message: string, public status: number) { super(message); }
-}
+// Same bundle serves the desktop window and the phone; the relay marks its copy of index.html.
+export const relayMode = document.querySelector('meta[name="agent8s-mode"]')?.getAttribute('content') === 'relay';
+
+let relay: RelayTransport | null = null;
+export const setRelay = (transport: RelayTransport | null) => { relay = transport; };
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+  if (relayMode) {
+    if (!relay) throw new ApiError('Нет подключения к компьютеру.', 503);
+    return relay.request<T>(method, path, body);
+  }
   const res = await fetch(path, {
     method,
     headers: { 'X-Agent8s-Token': token, ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}) },

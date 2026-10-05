@@ -18,7 +18,7 @@
   <div class="seg" role="group" aria-label="Агент">
     {#each app.agents as a (a.id)}
       <button class:on={a.id === agent} class={a.id} {disabled} onclick={() => a.id !== agent && onchange({ agent: a.id })}>
-        {a.label}
+        {app.mobile ? a.label.split(' ')[0] : a.label}
       </button>
     {/each}
   </div>
@@ -38,7 +38,7 @@
 </div>
 
 <style>
-  .picker { display: flex; align-items: center; gap: 6px; }
+  .picker { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; }
   .picker.disabled { opacity: 0.55; }
   .seg { display: inline-flex; background: var(--bg-active); border-radius: 8px; padding: 2px; }
   .seg button { border: 0; background: transparent; border-radius: 6px; padding: 3px 10px; color: var(--text-dim); font-weight: 500; }
@@ -47,4 +47,10 @@
   .seg button.on.codex { color: var(--codex); }
   .seg button:disabled { cursor: not-allowed; }
   select { max-width: 150px; }
+  @media (max-width: 760px) {
+    .picker { flex-wrap: nowrap; width: 100%; }
+    .seg { flex: none; }
+    .seg button { padding: 5px 9px; white-space: nowrap; }
+    select { flex: 1 1 0; min-width: 0; max-width: none; min-height: 34px; padding-left: 6px; text-overflow: ellipsis; }
+  }
 </style>

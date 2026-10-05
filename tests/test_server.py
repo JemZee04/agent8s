@@ -8,6 +8,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from agent8s.config import DesktopConfig
 from agent8s.db import Database
+from agent8s.desktop.remote import RemoteManager
 from agent8s.desktop.runner import Hub, Orchestrator
 from agent8s.desktop.server import create_app
 from agent8s.desktop.store import Store
@@ -49,7 +50,8 @@ async def ctx(tmp_path):
         {"type": "done", "ok": True, "error": None},
     ])}
     port = free_port()
-    app = create_app(config, db, orch, hub, TOKEN, port)
+    remote = RemoteManager(config.data_dir, hub, port, TOKEN)
+    app = create_app(config, db, orch, hub, TOKEN, port, None, remote)
     server = TestServer(app, host="127.0.0.1", port=port)
     client = TestClient(server)
     await client.start_server()
@@ -143,3 +145,23 @@ async def test_busy_and_validation_errors_are_reported_cleanly(ctx):
     assert (await client.get("/api/chats/999", headers=auth())).status == 400
     assert (await client.get("/api/chats/abc", headers=auth())).status == 404
     assert (await client.post("/api/projects", json={"name": "x", "path": "/definitely/not/here"}, headers=auth())).status == 400
+
+
+
+async def test_pairing_endpoints(ctx):
+    client, *_ = ctx
+    info = await (await client.get("/api/remote", headers=auth())).json()
+    assert info["configured"] is False and info["state"] == "stopped"
+    assert (await client.get("/api/remote/pairing", headers=auth())).status == 400  # nothing paired yet
+
+    insecure = await client.post("/api/remote/pair", json={"relay": "http://example.com/agent8s"}, headers=auth())
+    assert insecure.status == 400
+
+    paired = await client.post("/api/remote/pair", json={"relay": "http://127.0.0.1:9/agent8s"}, headers=auth())
+    assert paired.status == 200 and (await paired.json())["configured"] is True
+    pairing = await (await client.get("/api/remote/pairing", headers=auth())).json()
+    assert pairing["url"].startswith("http://127.0.0.1:9/agent8s/#k=") and "<svg" in pairing["svg"]
+
+    assert (await client.delete("/api/remote", headers=auth())).status == 200
+    assert (await (await client.get("/api/remote", headers=auth())).json())["configured"] is False
+    assert (await client.get("/api/remote", headers={})).status == 401  # still behind the token

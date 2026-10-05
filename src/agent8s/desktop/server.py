@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import io
 import json
 import logging
 import os
@@ -15,6 +16,7 @@ from aiohttp import WSMsgType, web
 
 from ..config import DesktopConfig
 from ..db import Database
+from .remote import RemoteManager
 from .runner import Busy, Hub, Orchestrator, UserError
 
 log = logging.getLogger("agent8s.desktop")
@@ -121,6 +123,19 @@ def _discover_repos(root: Path, known: set[str]) -> list[dict[str, str]]:
     return found
 
 
+def qr_svg(text: str) -> str:
+    try:
+        import qrcode
+        import qrcode.image.svg
+    except ImportError:
+        raise UserError("Для QR-кода нужен пакет qrcode: uv sync --extra desktop")
+    image = qrcode.make(text, image_factory=qrcode.image.svg.SvgPathImage, border=2,
+                        error_correction=qrcode.constants.ERROR_CORRECT_M)
+    buffer = io.BytesIO()
+    image.save(buffer)
+    return buffer.getvalue().decode()
+
+
 def _open_in(target: str, path: str) -> None:
     if sys.platform != "darwin":
         subprocess.Popen(["xdg-open", path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -137,7 +152,7 @@ def _open_in(target: str, path: str) -> None:
 
 
 def create_app(config: DesktopConfig, db: Database, orch: Orchestrator, hub: Hub, token: str, port: int,
-               extra_origins: list[str] | None = None) -> web.Application:
+               extra_origins: list[str] | None = None, remote: RemoteManager | None = None) -> web.Application:
     app = web.Application(
         middlewares=[make_security_middleware(token, port, extra_origins or []), errors],
         client_max_size=2 * 1024 * 1024,
@@ -237,6 +252,37 @@ def create_app(config: DesktopConfig, db: Database, orch: Orchestrator, hub: Hub
         chat = orch.get_chat_with_messages(_chat_id(request))["chat"]
         _open_in(_str(data, "target", "finder") or "finder", chat["worktree_path"])
         return web.json_response({"ok": True})
+
+    if remote is not None:
+        @routes.get("/api/remote")
+        async def remote_info(request: web.Request) -> web.Response:
+            return web.json_response(remote.info())
+
+        @routes.post("/api/remote/pair")
+        async def remote_pair(request: web.Request) -> web.Response:
+            data = await _body(request)
+            return web.json_response(await remote.pair(_str(data, "relay")))
+
+        @routes.get("/api/remote/pairing")
+        async def remote_pairing(request: web.Request) -> web.Response:
+            url = remote.pairing_url()
+            if url is None:
+                raise UserError("Телефон ещё не подключён.")
+            return web.json_response({"url": url, "svg": await asyncio.to_thread(qr_svg, url)})
+
+        @routes.delete("/api/remote")
+        async def remote_disable(request: web.Request) -> web.Response:
+            await remote.disable()
+            return web.json_response({"ok": True})
+
+        async def start_remote(_: web.Application) -> None:
+            await remote.start()
+
+        async def stop_remote(_: web.Application) -> None:
+            await remote.shutdown()
+
+        app.on_startup.append(start_remote)
+        app.on_cleanup.append(stop_remote)
 
     @routes.get("/ws")
     async def websocket(request: web.Request) -> web.WebSocketResponse:

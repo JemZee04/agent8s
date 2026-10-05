@@ -53,6 +53,8 @@
 * { box-sizing: border-box; }
 html, body, #app { height: 100%; margin: 0; }
 body {
+  overscroll-behavior: none;
+  -webkit-text-size-adjust: 100%;
   font: 13.5px/1.5 var(--sans);
   color: var(--text);
   background: var(--bg);
@@ -99,3 +101,10 @@ select { padding-right: 4px; }
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 3s; } }
+
+@media (max-width: 760px) {
+  body { font-size: 15px; }
+  /* 16px+ stops iOS Safari from zooming the page when an input gets focus */
+  input, select, textarea { font-size: 16px; }
+  button.ghost, .btn, button.primary { min-height: 36px; }
+}

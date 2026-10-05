@@ -5,6 +5,8 @@ import { svelte } from '@sveltejs/vite-plugin-svelte';
 const backend = process.env.AGENT8S_BACKEND ?? 'http://127.0.0.1:8765';
 
 export default defineConfig({
+  // Relative URLs: the same bundle is served at / by the desktop app and at /agent8s/ by the relay.
+  base: './',
   plugins: [svelte()],
   build: {
     outDir: '../src/agent8s/desktop/web',

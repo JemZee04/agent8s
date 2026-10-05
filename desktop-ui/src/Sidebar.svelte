@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { app, groups, select } from './lib/state.svelte';
+  import { app, groups, select, unpair, ask } from './lib/state.svelte';
 
   function newChat(projectId: number | null = null) {
     app.newChatProject = projectId;
@@ -41,14 +41,25 @@
     {/if}
   </nav>
 
-  {#if !app.online}
-    <div class="offline">Нет связи с сервером — переподключаюсь…</div>
+  {#if app.link === 'offline'}
+    <div class="offline">Компьютер не в сети — как только он включится, чаты появятся.</div>
+  {:else if app.link === 'connecting'}
+    <div class="offline soft">Подключаюсь…</div>
   {/if}
+
+  <div class="bottom">
+    {#if app.relayMode}
+      <button class="ghost" onclick={async () => (await ask('Забыть этот компьютер?', 'Ключ будет удалён с телефона. Чтобы подключиться снова, нужно будет заново отсканировать QR-код.', 'Забыть', true)) && unpair()}>Отключить телефон</button>
+    {:else}
+      <button class="ghost" onclick={() => (app.phoneDialogOpen = true)} title="Подключить телефон">📱 Телефон</button>
+    {/if}
+  </div>
 </aside>
 
 <style>
   aside { background: var(--bg-side); border-right: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; }
-  .top { display: flex; align-items: center; justify-content: space-between; padding: 14px 12px 10px 16px; }
+  .top { display: flex; align-items: center; justify-content: space-between; padding: max(14px, env(safe-area-inset-top)) 12px 10px 16px; }
+  .bottom { border-top: 1px solid var(--border); padding: 6px 10px max(8px, env(safe-area-inset-bottom)); }
   .brand { font-weight: 650; letter-spacing: 0.01em; }
   nav { overflow-y: auto; padding: 0 8px 12px; flex: 1; }
   .ghead { display: flex; align-items: center; justify-content: space-between; padding: 12px 8px 4px; }
@@ -69,4 +80,7 @@
   .ag.codex { color: var(--codex); }
   .empty, .hint { color: var(--text-faint); font-size: 12.5px; padding: 4px 10px; }
   .offline { background: var(--err-soft); color: var(--err); font-size: 12px; padding: 8px 14px; }
+  .offline.soft { background: var(--bg-active); color: var(--text-dim); }
+  @media (hover: none) { .add { opacity: 1; } .row { padding: 10px 10px; } }
+  @media (max-width: 760px) { aside { border-right: 0; } .row { font-size: 15px; } .chg, .ag { font-size: 12px; } }
 </style>
