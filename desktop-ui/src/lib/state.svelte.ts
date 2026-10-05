@@ -31,9 +31,10 @@ export const app = $state({
   now: Date.now(),
 });
 
-export interface PreviewInfo { cap: string; port: number; chat_id: number; exp: number; url: string }
+export interface PreviewInfo { cap: string; port: number; chat_id: number; exp: number; url: string; kind: 'port' | 'file'; name: string }
+export interface HtmlFile { path: string; rel: string; size: number; mtime: number }
 export interface PortInfo { port: number; command: string; cwd: string; kind: 'mine' | 'dev' | 'web' | 'other' }
-export const previews = $state({ list: [] as PreviewInfo[], ports: [] as PortInfo[], loading: false });
+export const previews = $state({ list: [] as PreviewInfo[], ports: [] as PortInfo[], files: [] as HtmlFile[], loading: false });
 
 export const diff = $state({
   chatId: null as number | null,
@@ -241,11 +242,12 @@ function apply(ev: ServerEvent) {
     case 'preview': {
       previews.list = previews.list.filter((p) => p.cap !== ev.cap);
       if (ev.op === 'add' && ev.url) {
-        const info: PreviewInfo = { cap: ev.cap, port: ev.port, chat_id: ev.chat_id, exp: ev.exp, url: ev.url };
+        const info: PreviewInfo = { cap: ev.cap, port: ev.port, chat_id: ev.chat_id, exp: ev.exp, url: ev.url, kind: ev.kind, name: ev.name };
         previews.list.push(info);
-        // A site the agent just exposed: offer to open it, wherever you are looking.
+        // Something just shared from the other device: offer to open it, wherever you are looking.
         if (!app.previewOpen) {
-          notify(`Превью сайта (порт ${ev.port}) готово`, 'info', { label: 'Открыть', run: () => openPreview(info.url) });
+          const what = ev.kind === 'file' ? `Файл ${ev.name} готов к чтению` : `Превью сайта (порт ${ev.port}) готово`;
+          notify(what, 'info', { label: 'Открыть', run: () => openPreview(info.url) });
         }
       }
       break;
@@ -567,9 +569,20 @@ export async function loadPorts(chatId: number) {
   }
 }
 
-export async function sharePort(chatId: number, port: number): Promise<PreviewInfo | null> {
+export async function loadHtmlFiles(chatId: number) {
   try {
-    const info = await api.post<PreviewInfo>(`/api/chats/${chatId}/preview`, { port });
+    previews.files = (await api.get<{ files: HtmlFile[] }>(`/api/chats/${chatId}/html`)).files;
+  } catch (e) {
+    fail(e);
+  }
+}
+
+export const shareFile = (chatId: number, file: string) => share(chatId, { file });
+export const sharePort = (chatId: number, port: number) => share(chatId, { port });
+
+async function share(chatId: number, target: { port: number } | { file: string }): Promise<PreviewInfo | null> {
+  try {
+    const info = await api.post<PreviewInfo>(`/api/chats/${chatId}/preview`, target);
     previews.list = [...previews.list.filter((p) => p.cap !== info.cap), info];
     return info;
   } catch (e) {

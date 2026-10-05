@@ -1,13 +1,22 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { app, loadPorts, notify, openPreview, previews, selectedChat, sharePort, stopPreview, type PortInfo } from './lib/state.svelte';
+  import {
+    app, loadHtmlFiles, loadPorts, notify, openPreview, previews, selectedChat, shareFile, sharePort, stopPreview,
+    type HtmlFile, type PortInfo,
+  } from './lib/state.svelte';
 
   const chat = $derived(selectedChat());
   let manual = $state('');
   let busy = $state(0);
 
+  let manualFile = $state('');
+  let busyFile = $state('');
+
   onMount(() => {
-    if (chat) void loadPorts(chat.id);
+    if (chat) {
+      void loadPorts(chat.id);
+      void loadHtmlFiles(chat.id);
+    }
   });
 
   const mine = $derived(previews.list.filter((p) => p.chat_id === chat?.id));
@@ -24,6 +33,22 @@
     if (info && app.relayMode) openPreview(info.url); // on the phone: straight to the page
     else if (info) notify('Ссылка отправлена на телефон — там появится уведомление «Открыть».', 'info');
   }
+
+  async function open(file: string) {
+    if (!chat) return;
+    busyFile = file;
+    const info = await shareFile(chat.id, file);
+    busyFile = '';
+    if (info && app.relayMode) openPreview(info.url);
+    else if (info) notify('Файл отправлен на телефон — там появится уведомление «Открыть».', 'info');
+  }
+
+  const sharedFiles = $derived(new Set(mine.filter((p) => p.kind === 'file').map((p) => p.name)));
+  const ago = (t: number) => {
+    const m = Math.round((app.now / 1000 - t) / 60);
+    return m < 1 ? 'только что' : m < 60 ? `${m} мин назад` : m < 1440 ? `${Math.round(m / 60)} ч назад` : `${Math.round(m / 1440)} дн назад`;
+  };
+  const kb = (n: number) => (n > 1e6 ? `${(n / 1e6).toFixed(1)} МБ` : `${Math.max(1, Math.round(n / 1e3))} КБ`);
 
   async function copy(url: string) {
     try {
@@ -42,7 +67,7 @@
 
 <div class="scrim" role="presentation" onclick={() => (app.previewOpen = false)} onkeydown={(e) => e.key === 'Escape' && (app.previewOpen = false)}>
   <div class="dialog" role="dialog" aria-modal="true" aria-label="Превью сайта" tabindex="-1" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()}>
-    <h2>Превью сайта</h2>
+    <h2>Превью сайта и HTML-файлов</h2>
     <p class="dim">
       Откройте в браузере телефона сайт, который агент запустил на компьютере (<code>localhost</code>). Ссылка живёт 8 часов.
       Страницы идут через ваше реле — оно их видит (в отличие от чатов, превью не шифруется сквозным шифрованием).
@@ -52,13 +77,34 @@
       <h3>Открытые превью</h3>
       {#each mine as p (p.cap)}
         <div class="row">
-          <span class="grow"><b>localhost:{p.port}</b> <span class="dim">· {left(p.exp)}</span></span>
+          <span class="grow"><b>{p.kind === 'file' ? '📄 ' + p.name : p.name}</b> <span class="dim">· {left(p.exp)}</span></span>
           <button class="primary" onclick={() => openPreview(p.url)}>Открыть</button>
           <button class="btn" onclick={() => copy(p.url)}>Ссылка</button>
           <button class="btn danger" onclick={() => stopPreview(p.cap)}>Остановить</button>
         </div>
       {/each}
     {/if}
+
+    <h3>HTML-файлы для чтения</h3>
+    {#if !previews.files.length}
+      <p class="dim">В папке этого чата HTML-файлов нет. Можно указать путь к файлу ниже.</p>
+    {/if}
+    {#each previews.files.slice(0, 6) as f (f.path)}
+      {@render fileRow(f)}
+    {/each}
+    {#if previews.files.length > 6}
+      <details>
+        <summary class="dim">Ещё файлов: {previews.files.length - 6}</summary>
+        {#each previews.files.slice(6) as f (f.path)}
+          {@render fileRow(f)}
+        {/each}
+      </details>
+    {/if}
+    <div class="row">
+      <input type="text" bind:value={manualFile} placeholder="/путь/к/файлу.html" class="grow" onkeydown={(e) => e.key === 'Enter' && manualFile.trim() && open(manualFile.trim())} />
+      <button class="btn" disabled={!manualFile.trim()} onclick={() => open(manualFile.trim())}>Открыть</button>
+    </div>
+    <p class="dim">Вместе с файлом доступны картинки, стили и скрипты из его папки — но не другие файлы (ключи, базы, .env).</p>
 
     <h3>Найденные сайты на компьютере</h3>
     {#if previews.loading && !previews.ports.length}
@@ -85,11 +131,20 @@
     </div>
 
     <div class="actions">
-      <button class="btn" onclick={() => chat && loadPorts(chat.id)}>Обновить список</button>
+      <button class="btn" onclick={() => chat && (loadPorts(chat.id), loadHtmlFiles(chat.id))}>Обновить список</button>
       <button class="primary" onclick={() => (app.previewOpen = false)}>Закрыть</button>
     </div>
   </div>
 </div>
+
+{#snippet fileRow(f: HtmlFile)}
+  <div class="row">
+    <span class="grow"><b class="fname" title={f.path}>📄 {f.rel}</b> <span class="dim">{ago(f.mtime)} · {kb(f.size)}</span></span>
+    <button class="btn" disabled={busyFile === f.path || sharedFiles.has(f.rel.split('/').pop() ?? '')} onclick={() => open(f.path)}>
+      {sharedFiles.has(f.rel.split('/').pop() ?? '') ? 'Открыто' : app.relayMode ? 'Открыть здесь' : 'Открыть на телефоне'}
+    </button>
+  </div>
+{/snippet}
 
 {#snippet portRow(p: PortInfo)}
   <div class="row">
@@ -113,6 +168,7 @@
   code { font: 12px var(--mono); background: var(--bg-code); border-radius: 5px; padding: 0 5px; }
   .row { display: flex; align-items: center; gap: 8px; padding: 6px 0; flex-wrap: wrap; }
   .grow { flex: 1; min-width: 0; }
+  .fname { word-break: break-all; }
   .badge { font-size: 11px; background: var(--accent-soft); color: var(--accent); border-radius: 8px; padding: 0 7px; margin-left: 6px; }
   details { margin-top: 6px; }
   summary { cursor: default; padding: 4px 0; }

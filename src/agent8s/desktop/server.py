@@ -17,7 +17,7 @@ from aiohttp import WSMsgType, web
 from ..config import DesktopConfig
 from ..db import Database
 from . import ports as portscan, service
-from .preview import is_web_page
+from .preview import is_web_page, list_html_files
 from .remote import RemoteManager
 from .runner import Busy, Hub, Orchestrator, UserError
 
@@ -315,10 +315,16 @@ def create_app(config: DesktopConfig, db: Database, orch: Orchestrator, hub: Hub
         async def create_preview(request: web.Request) -> web.Response:
             chat = orch.get_chat(_chat_id(request))
             data = await _body(request)
+            file = _str(data, "file")
             number = data.get("port")
-            if not isinstance(number, int) or isinstance(number, bool):
-                raise UserError("Нужен номер порта.")
-            return web.json_response(remote.create_preview(chat["id"], number), status=201)
+            if not file and (not isinstance(number, int) or isinstance(number, bool)):
+                raise UserError("Нужен номер порта или путь к HTML-файлу.")
+            return web.json_response(remote.create_preview(chat["id"], number, file), status=201)
+
+        @routes.get("/api/chats/{chat_id}/html")
+        async def chat_html(request: web.Request) -> web.Response:
+            chat = orch.get_chat(_chat_id(request))
+            return web.json_response({"files": await asyncio.to_thread(list_html_files, chat["worktree_path"])})
 
         @routes.get("/api/previews")
         async def list_previews(request: web.Request) -> web.Response:

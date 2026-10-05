@@ -50,7 +50,7 @@ EVENT_BATCH_SECONDS = 0.03
 # the Mac) and /api/remote* (a phone must not manage its own pairing).
 ALLOWED_PATH = re.compile(
     r"^/api/(bootstrap|discover|projects|import/claude|previews(/[0-9a-f]{32})?"
-    r"|chats(/\d+(\?(?:limit|before)=\d+(?:&(?:limit|before)=\d+)?|/(send|stop|diff|commit|merge|dirs|ports|preview))?)?)$"
+    r"|chats(/\d+(\?(?:limit|before)=\d+(?:&(?:limit|before)=\d+)?|/(send|stop|diff|commit|merge|dirs|ports|preview|html))?)?)$"
 )
 ALLOWED_METHODS = {"GET", "POST", "PATCH", "DELETE"}
 
@@ -368,9 +368,9 @@ class RemoteManager:
             raise UserError("Не могу вывести адрес для превью: задайте AGENT8S_PREVIEW_ORIGIN (второе имя вашего сервера).")
         return f"{origin}{parts.path.rstrip('/')}/p/{cap}/"
 
-    def create_preview(self, chat_id: int, port: int) -> dict[str, Any]:
+    def create_preview(self, chat_id: int, port: Optional[int] = None, file: Optional[str] = None) -> dict[str, Any]:
         self.preview_url("0" * 32)  # fails early (not paired / no preview host) before anything is registered
-        preview = self.previews.create(chat_id, port)
+        preview = self.previews.create_file(chat_id, file) if file else self.previews.create(chat_id, port or 0)
         return {**preview.public(), "url": self.preview_url(preview.cap)}
 
     def list_previews(self, chat_id: Optional[int] = None) -> list[dict[str, Any]]:

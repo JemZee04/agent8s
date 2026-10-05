@@ -53,4 +53,4 @@ export type ServerEvent =
   | { t: 'msg_ops'; chat_id: number; msg_id: number; rev: number; ops: Op[] }
   | { t: 'msg_status'; chat_id: number; msg_id: number; status: Message['status'] }
   | { t: 'diff_changed'; chat_id: number }
-  | { t: 'preview'; op: 'add' | 'del'; cap: string; port: number; chat_id: number; exp: number; url?: string };
+  | { t: 'preview'; op: 'add' | 'del'; cap: string; port: number; chat_id: number; exp: number; kind: 'port' | 'file'; name: string; url?: string };

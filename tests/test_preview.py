@@ -400,3 +400,121 @@ async def test_web_probe_tells_sites_from_everything_else(devserver):
     assert await is_web_page(raw.getsockname()[1]) is False
     raw.close()
     assert await is_web_page(1) is False  # nothing listening
+
+
+# -- HTML files opened for reading ---------------------------------------------------------------
+
+
+@pytest.fixture
+def report(tmp_path):
+    folder = tmp_path / "docs"
+    (folder / "img").mkdir(parents=True)
+    (folder / "report.html").write_text('<link rel="stylesheet" href="style.css"><h1>Отчёт</h1><img src="img/logo.png">', encoding="utf-8")
+    (folder / "style.css").write_text("h1{color:green}")
+    (folder / "img" / "logo.png").write_bytes(b"\x89PNG fake")
+    (folder / "other.html").write_text("<p>second page</p>")
+    (folder / ".env").write_text("SECRET=1")
+    (folder / "key.pem").write_text("PRIVATE")
+    (folder / "data.sqlite").write_bytes(b"db")
+    (tmp_path / "outside.txt").write_text("outside the shared folder")
+    (folder / "escape.txt").symlink_to(tmp_path / "outside.txt")
+    (folder / ".hidden").mkdir()
+    (folder / ".hidden" / "a.html").write_text("hidden")
+    return folder
+
+
+async def serve(mgr, cap, path, method="GET"):
+    res = await mgr.fetch(request_msg(cap, path, method))
+    if res["t"] == "httperr":
+        return res
+    return {"s": res["s"], "h": dict(res["h"]), "b": base64.b64decode(res["b"])}
+
+
+def test_html_files_are_listed_newest_first_without_the_noise(tmp_path):
+    import os
+    from agent8s.desktop.preview import list_html_files
+
+    (tmp_path / "node_modules" / "pkg").mkdir(parents=True)
+    (tmp_path / "node_modules" / "pkg" / "x.html").write_text("x")
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "y.html").write_text("y")
+    (tmp_path / "a" / "b" / "c" / "d" / "e").mkdir(parents=True)
+    (tmp_path / "a" / "b" / "c" / "d" / "e" / "too-deep.html").write_text("z")
+    (tmp_path / "old.html").write_text("old")
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "new.htm").write_text("new")
+    (tmp_path / "notes.txt").write_text("not html")
+    os.utime(tmp_path / "old.html", (1000, 1000))
+
+    assert [f["rel"] for f in list_html_files(str(tmp_path))] == [os.path.join("sub", "new.htm"), "old.html"]
+    assert list_html_files(str(tmp_path / "missing")) == []
+
+
+def test_only_html_files_can_be_shared(report, tmp_path):
+    mgr = PreviewManager(Hub(), set())
+    for bad, message in (("docs/report.html", "абсолютный"), (str(tmp_path / "nope.html"), "не найден"),
+                         (str(report / "style.css"), "HTML"), (str(report), "HTML")):
+        with pytest.raises(UserError, match=message):
+            mgr.create_file(1, bad)
+    first = mgr.create_file(1, str(report / "report.html"))
+    assert first.kind == "file" and first.name == "report.html" and first.public()["name"] == "report.html"
+    assert mgr.create_file(1, str(report / "report.html")).cap == first.cap  # same file again: same link
+    assert mgr.create_file(2, str(report / "report.html")).cap != first.cap
+
+
+async def test_the_file_and_what_a_web_page_uses_are_served(report):
+    mgr = PreviewManager(Hub(), set())
+    cap = mgr.create_file(1, str(report / "report.html")).cap
+
+    page = await serve(mgr, cap, "/")
+    assert page["s"] == 200 and page["h"]["Content-Type"] == "text/html; charset=utf-8"  # Cyrillic needs the charset
+    assert "Отчёт".encode() in page["b"]
+    assert (await serve(mgr, cap, "/style.css"))["h"]["Content-Type"] == "text/css; charset=utf-8"
+    assert (await serve(mgr, cap, "/img/logo.png"))["h"]["Content-Type"] == "image/png"
+    assert b"second page" in (await serve(mgr, cap, "/other.html?x=1"))["b"]  # links between pages work
+    head = await serve(mgr, cap, "/style.css", "HEAD")
+    assert head["s"] == 200 and head["b"] == b""
+    assert (await serve(mgr, cap, "/", "POST"))["s"] == 405
+    assert (await serve(mgr, cap, "/missing.css"))["s"] == 404
+
+
+async def test_a_shared_file_never_exposes_anything_else(report):
+    mgr = PreviewManager(Hub(), set())
+    cap = mgr.create_file(1, str(report / "report.html")).cap
+    for path in ("/.env", "/key.pem", "/data.sqlite",  # not something a web page uses
+                 "/../outside.txt", "/%2e%2e/outside.txt", "/img/../../outside.txt",  # leaving the folder
+                 "/escape.txt",  # a symlink pointing outside
+                 "/.hidden/a.html", "/img/.", "//etc/passwd"):
+        res = await serve(mgr, cap, path)
+        assert res.get("s") == 404 or res["t"] == "httperr", path
+    assert b"outside" not in (await serve(mgr, cap, "/escape.txt")).get("b", b"")
+
+
+async def test_a_page_that_is_not_utf8_is_not_mislabelled(tmp_path):
+    page = tmp_path / "old.html"
+    page.write_bytes('<meta charset="windows-1251"><p>Привет</p>'.encode("cp1251"))
+    mgr = PreviewManager(Hub(), set())
+    res = await serve(mgr, mgr.create_file(1, str(page)).cap, "/")
+    assert res["h"]["Content-Type"] == "text/html"  # forcing utf-8 here would garble it; the page's own <meta> decides
+
+
+async def test_a_shared_file_opens_through_the_relay(report):
+    relay_srv = TestServer(make_app(None, "/agent8s"), host="127.0.0.1")
+    await relay_srv.start_server()
+    previews = PreviewManager(Hub(), set())
+    link = RelayLink(f"http://127.0.0.1:{relay_srv.port}/agent8s", KEY, Hub(), "http://127.0.0.1:9", "t", previews)
+    link.start()
+    for _ in range(100):
+        if link.state == "connected":
+            break
+        await asyncio.sleep(0.02)
+    cap = previews.create_file(1, str(report / "report.html")).cap
+    await asyncio.sleep(0.2)
+    async with aiohttp.ClientSession(cookies={"a8p": cap}) as browser:
+        async with browser.get(f"http://127.0.0.1:{relay_srv.port}/agent8s/pv/") as r:
+            assert r.status == 200 and "Отчёт" in await r.text()
+        async with browser.get(f"http://127.0.0.1:{relay_srv.port}/agent8s/pv/.env") as r:
+            assert r.status == 404
+    await link.stop()
+    await previews.close()
+    await relay_srv.close()

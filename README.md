@@ -214,6 +214,14 @@ history like any other chat. Folders that are not git repositories import fine (
 sessions whose folder no longer exists or that were launched from temp folders are greyed out. The session files
 are only read, never changed. Long histories load a page at a time ("Show earlier messages").
 
+### Read an HTML file on the phone
+
+The same **🌐 Preview** dialog lists the HTML files in the chat's folder (newest first, so what the agent just generated
+is on top) and takes a path to any other `.html` file. The Mac serves the file together with what a web page uses next to
+it (images, styles, scripts, fonts, `.json`/`.txt`/`.md`/`.pdf`) so it renders properly and links between pages work. The
+folder is *not* shared as a whole: dotfiles, `..`, symlinks pointing out of it and anything else (keys, `.env`,
+databases) answer 404. Same link lifetime, relay trust and second hostname as the site previews below.
+
 ### Open a site the agent runs on `localhost` on the phone
 
 Ask the agent to "run the site on localhost", then open **🌐 Preview** in the chat (desktop or phone): it lists what

@@ -11,13 +11,16 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import mimetypes
+import os
 import re
 import secrets
 import socket
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Optional
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 import aiohttp
 
@@ -34,6 +37,36 @@ HOP_BY_HOP = {"connection", "keep-alive", "proxy-authenticate", "proxy-authoriza
               "transfer-encoding", "upgrade", "content-length", "host"}
 CAP_RE = re.compile(r"^[0-9a-f]{32}$")
 
+# A shared HTML file brings along its folder (images, styles, scripts), but only things a web page
+# uses: a folder next to it may well contain .env files, keys or databases.
+SERVED_EXTENSIONS = {
+    ".html", ".htm", ".css", ".js", ".mjs", ".json", ".map", ".svg", ".png", ".jpg", ".jpeg", ".gif", ".webp",
+    ".avif", ".ico", ".woff", ".woff2", ".ttf", ".otf", ".txt", ".md", ".pdf",
+}
+HTML_EXTENSIONS = {".html", ".htm"}
+SKIPPED_DIRS = {".git", "node_modules", ".venv", "venv", "__pycache__", ".next", ".cache", "site-packages", ".idea"}
+
+
+def list_html_files(folder: str, limit: int = 100, max_depth: int = 4) -> list[dict[str, Any]]:
+    """HTML files under folder, newest first (what the agent just produced comes first)."""
+    root = Path(folder)
+    found: list[dict[str, Any]] = []
+    if not root.is_dir():
+        return found
+    for current, dirs, files in os.walk(root):
+        depth = len(Path(current).relative_to(root).parts)
+        dirs[:] = [d for d in dirs if d not in SKIPPED_DIRS and not d.startswith(".")] if depth < max_depth else []
+        for name in files:
+            path = Path(current) / name
+            if path.suffix.lower() in HTML_EXTENSIONS and not name.startswith("."):
+                try:
+                    stat = path.stat()
+                except OSError:
+                    continue
+                found.append({"path": str(path), "rel": str(path.relative_to(root)), "size": stat.st_size, "mtime": stat.st_mtime})
+    found.sort(key=lambda f: f["mtime"], reverse=True)
+    return found[:limit]
+
 
 @dataclass
 class Preview:
@@ -43,9 +76,17 @@ class Preview:
     host: str
     exp: float
     created: float = field(default_factory=time.time)
+    kind: str = "port"  # "port": a site on localhost; "file": an HTML file (and its folder) served from disk
+    file: str = ""
+    root: str = ""
+
+    @property
+    def name(self) -> str:
+        return Path(self.file).name if self.kind == "file" else f"localhost:{self.port}"
 
     def public(self) -> dict[str, Any]:
-        return {"cap": self.cap, "port": self.port, "chat_id": self.chat_id, "exp": self.exp}
+        return {"cap": self.cap, "port": self.port, "chat_id": self.chat_id, "exp": self.exp,
+                "kind": self.kind, "name": self.name}
 
 
 Listener = Callable[[str, Preview], None]
@@ -128,6 +169,30 @@ class PreviewManager:
         self._notify("add", preview)
         return preview
 
+    def create_file(self, chat_id: int, file: str) -> Preview:
+        self._prune()
+        path = Path(file).expanduser()
+        if not path.is_absolute():
+            raise UserError("Нужен абсолютный путь к файлу.")
+        try:
+            path = path.resolve(strict=True)
+        except OSError:
+            raise UserError(f"Файл не найден: {file}")
+        if not path.is_file() or path.suffix.lower() not in HTML_EXTENSIONS:
+            raise UserError("Это не HTML-файл (.html / .htm).")
+        existing = next((p for p in self._items.values() if p.kind == "file" and p.file == str(path) and p.chat_id == chat_id), None)
+        if existing:
+            existing.exp = time.time() + self._ttl
+            self._notify("add", existing)
+            return existing
+        if len(self._items) >= MAX_PREVIEWS:
+            raise UserError(f"Одновременно можно держать не больше {MAX_PREVIEWS} превью — остановите ненужные.")
+        preview = Preview(secrets.token_hex(16), 0, chat_id, "", time.time() + self._ttl,
+                          kind="file", file=str(path), root=str(path.parent))
+        self._items[preview.cap] = preview
+        self._notify("add", preview)
+        return preview
+
     def remove(self, cap: str) -> bool:
         preview = self._items.pop(cap, None)
         if preview:
@@ -159,6 +224,8 @@ class PreviewManager:
         preview = self._items.get(cap) if isinstance(cap, str) else None
         if preview is None or preview.exp < time.time():
             return {"t": "httperr", "id": rid, "e": "Превью остановлено или истекло."}
+        if preview.kind == "file":
+            return self._serve_file(preview, rid, msg.get("m"), msg.get("p"))
         path = msg.get("p")
         method = msg.get("m")
         if not isinstance(path, str) or not path.startswith("/") or method not in {"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"}:
@@ -194,6 +261,45 @@ class PreviewManager:
             return {"t": "httperr", "id": rid, "e": "Сайт на компьютере не ответил вовремя."}
         except aiohttp.ClientError as exc:
             return {"t": "httperr", "id": rid, "e": f"Сайт на компьютере недоступен: {type(exc).__name__}"}
+
+    @staticmethod
+    def _serve_file(preview: Preview, rid: Any, method: Any, raw_path: Any) -> dict[str, Any]:
+        def reply(status: int, body: bytes = b"", content_type: str = "text/plain; charset=utf-8") -> dict[str, Any]:
+            headers = [["Content-Type", content_type], ["Cache-Control", "no-cache"]]  # edits show on reload
+            return {"t": "httpres", "id": rid, "s": status, "h": headers, "b": base64.b64encode(body).decode()}
+
+        if method not in ("GET", "HEAD"):
+            return reply(405, b"Method Not Allowed")
+        if not isinstance(raw_path, str) or not raw_path.startswith("/") or "\x00" in raw_path:
+            return {"t": "httperr", "id": rid, "e": "Некорректный запрос."}
+        relative = unquote(urlsplit(raw_path).path).lstrip("/")
+        root = Path(preview.root)
+        if not relative:
+            target = Path(preview.file)
+        else:
+            parts = Path(relative).parts
+            if any(part.startswith(".") or part == ".." for part in parts):  # dotfiles and traversal
+                return reply(404, b"Not found")
+            target = (root / relative).resolve()
+            # resolve() follows symlinks, so a link pointing out of the folder fails this check too
+            if root not in target.parents or target.suffix.lower() not in SERVED_EXTENSIONS:
+                return reply(404, b"Not found")
+        try:
+            if not target.is_file():
+                return reply(404, b"Not found")
+            if target.stat().st_size > MAX_RESPONSE:
+                return {"t": "httperr", "id": rid, "e": "Файл слишком большой для превью."}
+            body = target.read_bytes()
+        except OSError:
+            return reply(404, b"Not found")
+        content_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+        if content_type.startswith("text/") or content_type in ("application/json", "application/javascript"):
+            try:
+                body.decode("utf-8")
+                content_type += "; charset=utf-8"  # otherwise the browser guesses (and guesses wrong for Cyrillic)
+            except UnicodeDecodeError:
+                pass
+        return reply(200, b"" if method == "HEAD" else body, content_type)
 
     @staticmethod
     def _rewrite_header(name: str, value: str, port: int) -> str:
