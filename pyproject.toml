@@ -5,13 +5,25 @@ description = "Telegram bot that drives headless coding agents (Claude Code, Cod
 requires-python = ">=3.11"
 dependencies = [
     "aiogram>=3.13",
+    "aiohttp>=3.9",
     "caldav>=3.2.1",
     "pyjwt[crypto]>=2.13.0",
     "python-dotenv>=1.0",
 ]
 
+[project.optional-dependencies]
+desktop = ["pywebview>=5.0"]
+
+[dependency-groups]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.24"]
+
 [project.scripts]
 agent8s-bot = "agent8s.bot.main:run"
+agent8s-desktop = "agent8s.desktop.app:run"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
 
 [build-system]
 requires = ["hatchling"]

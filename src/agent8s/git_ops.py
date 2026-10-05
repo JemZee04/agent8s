@@ -78,6 +78,21 @@ def merge_branch(project_path: Path, branch: str, message: str) -> None:
     _run(["merge", "--no-ff", branch, "-m", message], project_path)
 
 
+def abort_merge(project_path: Path) -> None:
+    try:
+        _run(["merge", "--abort"], project_path)
+    except GitError:
+        pass  # nothing to abort: the merge failed before it started
+
+
+def current_branch(path: Path) -> str:
+    return _run(["rev-parse", "--abbrev-ref", "HEAD"], path).strip()
+
+
+def status_short(path: Path) -> str:
+    return _run(["status", "--short"], path).strip()
+
+
 @dataclass
 class RepoCheck:
     ok: bool

@@ -9,3 +9,7 @@ worktrees/
 *.db-journal
 
 .DS_Store
+
+# desktop UI
+desktop-ui/node_modules/
+src/agent8s/desktop/web/

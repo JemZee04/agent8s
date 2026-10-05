@@ -115,6 +115,39 @@ def load_config() -> Config:
     )
 
 
+@dataclass(frozen=True)
+class DesktopConfig:
+    data_dir: Path
+    worktree_dir: Path
+    projects_dir: Path
+    claude_allowed_tools: list[str]
+    claude_permission_mode: str
+    codex_sandbox: str
+    turn_timeout_seconds: int
+
+    @property
+    def db_path(self) -> Path:
+        return self.data_dir / "agent8s.sqlite3"
+
+
+def load_desktop_config() -> DesktopConfig:
+    # Same env vars and same database file as the Telegram bot (so projects
+    # are shared), but no Telegram credentials required.
+    data_dir = Path(os.environ.get("AGENT8S_DATA_DIR", "./data")).resolve()
+    worktree_dir = Path(os.environ.get("AGENT8S_WORKTREE_DIR", "./worktrees")).resolve()
+    data_dir.mkdir(parents=True, exist_ok=True)
+    worktree_dir.mkdir(parents=True, exist_ok=True)
+    return DesktopConfig(
+        data_dir=data_dir,
+        worktree_dir=worktree_dir,
+        projects_dir=Path(os.environ.get("AGENT8S_PROJECTS_DIR", "~/Documents")).expanduser().resolve(),
+        claude_allowed_tools=_split_csv(os.environ.get("AGENT8S_CLAUDE_ALLOWED_TOOLS", "Bash,Edit,Write,Read,Grep,Glob,Skill")),
+        claude_permission_mode=os.environ.get("AGENT8S_CLAUDE_PERMISSION_MODE", "acceptEdits").strip(),
+        codex_sandbox=os.environ.get("AGENT8S_CODEX_SANDBOX", "workspace-write").strip(),
+        turn_timeout_seconds=int(os.environ.get("AGENT8S_DESKTOP_TURN_TIMEOUT", str(60 * 60))),
+    )
+
+
 def _optional_path(value: Optional[str]) -> Optional[Path]:
     value = (value or "").strip()
     return Path(value).expanduser().resolve() if value else None
