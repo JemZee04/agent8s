@@ -31,7 +31,7 @@ export const app = $state({
   now: Date.now(),
 });
 
-export interface PreviewInfo { cap: string; port: number; chat_id: number; exp: number; url: string; kind: 'port' | 'file'; name: string; root?: string; missing?: string[] }
+export interface PreviewInfo { cap: string; port: number; chat_id: number; exp: number; url: string; kind: 'port' | 'file'; name: string; root?: string; missing?: string[]; desktop?: boolean }
 export interface HtmlFile { path: string; rel: string; size: number; mtime: number }
 export interface PortInfo { port: number; command: string; cwd: string; kind: 'mine' | 'dev' | 'web' | 'other' }
 export const previews = $state({ list: [] as PreviewInfo[], ports: [] as PortInfo[], files: [] as HtmlFile[], loading: false });
@@ -240,9 +240,13 @@ function apply(ev: ServerEvent) {
       break;
     }
     case 'preview': {
+      if (ev.op === 'update') {
+        previews.list = previews.list.map((p) => (p.cap === ev.cap ? { ...p, desktop: ev.desktop } : p));
+        break;
+      }
       previews.list = previews.list.filter((p) => p.cap !== ev.cap);
       if (ev.op === 'add' && ev.url) {
-        const info: PreviewInfo = { cap: ev.cap, port: ev.port, chat_id: ev.chat_id, exp: ev.exp, url: ev.url, kind: ev.kind, name: ev.name };
+        const info: PreviewInfo = { cap: ev.cap, port: ev.port, chat_id: ev.chat_id, exp: ev.exp, url: ev.url, kind: ev.kind, name: ev.name, desktop: ev.desktop };
         previews.list.push(info);
         // Something just shared from the other device: offer to open it, wherever you are looking.
         if (!app.previewOpen) {
@@ -508,6 +512,7 @@ export interface ImportableSession {
   mtime: number;
   size: number;
   imported: boolean;
+  chat_id: number | null;
   importable: boolean;
   reason: string;
 }
@@ -594,6 +599,16 @@ async function share(chatId: number, target: { port: number } | { file: string }
   } catch (e) {
     fail(e);
     return null;
+  }
+}
+
+export async function setDesktopView(cap: string, on: boolean) {
+  try {
+    const info = await api.post<PreviewInfo>(`/api/previews/${cap}`, { desktop: on });
+    previews.list = previews.list.map((p) => (p.cap === cap ? { ...p, desktop: info.desktop } : p));
+    notify(on ? 'Включено. Обновите страницу на телефоне — она построится в ширину компьютера.' : 'Выключено. Обновите страницу на телефоне.', 'info');
+  } catch (e) {
+    fail(e);
   }
 }
 

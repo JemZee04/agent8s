@@ -324,11 +324,23 @@ def create_app(config: DesktopConfig, db: Database, orch: Orchestrator, hub: Hub
         @routes.get("/api/chats/{chat_id}/html")
         async def chat_html(request: web.Request) -> web.Response:
             chat = orch.get_chat(_chat_id(request))
-            return web.json_response({"files": await asyncio.to_thread(list_html_files, chat["worktree_path"])})
+            exclude = orch.other_folders_inside(chat["id"])
+            return web.json_response({"files": await asyncio.to_thread(list_html_files, chat["worktree_path"], 100, 4, exclude)})
 
         @routes.get("/api/previews")
         async def list_previews(request: web.Request) -> web.Response:
             return web.json_response({"previews": remote.list_previews()})
+
+        @routes.post("/api/previews/{cap}")
+        async def update_preview(request: web.Request) -> web.Response:
+            data = await _body(request)
+            if not isinstance(data.get("desktop"), bool):
+                raise UserError("Нужно поле desktop: true или false.")
+            preview = remote.previews.set_desktop(request.match_info["cap"], data["desktop"])
+            if preview is None:
+                raise UserError("Превью не найдено или истекло.")
+            return web.json_response(remote.list_previews(preview.chat_id) and next(
+                p for p in remote.list_previews(preview.chat_id) if p["cap"] == preview.cap))
 
         @routes.delete("/api/previews/{cap}")
         async def delete_preview(request: web.Request) -> web.Response:

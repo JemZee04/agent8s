@@ -199,3 +199,27 @@ async def test_sessions_from_temporary_folders_are_not_offered(env, tmp_path, mo
     monkeypatch.setattr(runner_module, "TEMP_PREFIXES", (str(tmp_path) + "/",))
     entry_ = {s["id"]: s for s in orch.claude_sessions()}[path.stem]
     assert entry_["importable"] is False and "временная" in entry_["reason"]
+
+
+async def test_listing_says_which_chat_an_imported_session_became(env):
+    orch, store, db, repo, root = env
+    path = write_session(root, repo, conversation(repo))
+    before = {s["id"]: s for s in orch.claude_sessions()}[path.stem]
+    assert before["chat_id"] is None and before["imported"] is False
+    chat_id = (await orch.import_claude([path.stem]))[0]["chat_id"]
+    after = {s["id"]: s for s in orch.claude_sessions()}[path.stem]
+    assert after["imported"] is True and after["chat_id"] == chat_id  # the UI opens this chat on a tap
+
+
+async def test_other_folders_inside_a_chats_folder_are_found(env, tmp_path):
+    orch, store, db, repo, root = env
+    outer = orch.add_project("outer", str(repo))
+    inner_dir = repo / "inner"
+    inner_dir.mkdir()
+    for cmd in (["init", "-q", "-b", "main"], ["config", "user.email", "t@t"], ["config", "user.name", "t"],
+                ["commit", "-q", "--allow-empty", "-m", "init"]):
+        subprocess.run(["git", *cmd], cwd=inner_dir, check=True)
+    inner = orch.add_project("inner", str(inner_dir))
+    chat = store.create_chat(outer.id, "outer chat", "direct", "main", str(repo), "claude")
+    store.create_chat(inner.id, "inner chat", "direct", "main", str(inner_dir), "claude")
+    assert orch.other_folders_inside(chat.id) == [str(inner_dir.resolve())]

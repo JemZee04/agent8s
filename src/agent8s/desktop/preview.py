@@ -48,15 +48,22 @@ HTML_EXTENSIONS = {".html", ".htm"}
 SKIPPED_DIRS = {".git", "node_modules", ".venv", "venv", "__pycache__", ".next", ".cache", "site-packages", ".idea"}
 
 
-def list_html_files(folder: str, limit: int = 100, max_depth: int = 4) -> list[dict[str, Any]]:
-    """HTML files under folder, newest first (what the agent just produced comes first)."""
+def list_html_files(folder: str, limit: int = 100, max_depth: int = 4, exclude: Sequence[str] = ()) -> list[dict[str, Any]]:
+    """HTML files under folder, newest first (what the agent just produced comes first).
+
+    `exclude`: folders that belong to *other* projects/chats but happen to sit inside this one;
+    their files are not this chat's."""
     root = Path(folder)
     found: list[dict[str, Any]] = []
     if not root.is_dir():
         return found
+    skipped = {str(Path(e).resolve()) for e in exclude}
     for current, dirs, files in os.walk(root):
         depth = len(Path(current).relative_to(root).parts)
-        dirs[:] = [d for d in dirs if d not in SKIPPED_DIRS and not d.startswith(".")] if depth < max_depth else []
+        dirs[:] = [
+            d for d in dirs
+            if d not in SKIPPED_DIRS and not d.startswith(".") and str((Path(current) / d).resolve()) not in skipped
+        ] if depth < max_depth else []
         for name in files:
             path = Path(current) / name
             if path.suffix.lower() in HTML_EXTENSIONS and not name.startswith("."):
@@ -71,6 +78,24 @@ def list_html_files(folder: str, limit: int = 100, max_depth: int = 4) -> list[d
 
 _REF = re.compile(r"""(?:href|src|poster)\s*=\s*["']([^"']+)["']|url\(\s*["']?([^)"']+)""", re.I)
 _EXTERNAL = re.compile(r"^([a-z][a-z0-9+.-]*:|//)", re.I)
+
+
+DESKTOP_VIEWPORT = b'<meta name="viewport" content="width=1100">'
+_VIEWPORT_TAG = re.compile(rb"<meta\b[^>]*\bname\s*=\s*[\"']?viewport[\"']?[^>]*>", re.I)
+_HEAD_OPEN = re.compile(rb"<head\b[^>]*>", re.I)
+
+
+def force_desktop_viewport(body: bytes) -> bytes:
+    """Make a phone lay a page out at desktop width, for pages that have no mobile layout.
+
+    Replaces the page's own viewport declaration (which is what asks the phone for a narrow layout);
+    the page then renders as on a computer and can be zoomed."""
+    if _VIEWPORT_TAG.search(body):
+        return _VIEWPORT_TAG.sub(DESKTOP_VIEWPORT, body, count=1)
+    head = _HEAD_OPEN.search(body)
+    if head:
+        return body[: head.end()] + DESKTOP_VIEWPORT + body[head.end():]
+    return DESKTOP_VIEWPORT + body
 
 
 def local_references(html: str) -> list[str]:
@@ -151,6 +176,7 @@ class Preview:
     file: str = ""
     root: str = ""
     misses: list[str] = field(default_factory=list)  # what the page asked for and could not get
+    desktop: bool = False  # lay pages out at desktop width (for sites without a mobile layout)
 
     @property
     def name(self) -> str:
@@ -158,7 +184,8 @@ class Preview:
 
     def public(self) -> dict[str, Any]:
         return {"cap": self.cap, "port": self.port, "chat_id": self.chat_id, "exp": self.exp,
-                "kind": self.kind, "name": self.name, "root": self.root, "missing": self.misses[-8:]}
+                "kind": self.kind, "name": self.name, "root": self.root, "missing": self.misses[-8:],
+                "desktop": self.desktop}
 
 
 Listener = Callable[[str, Preview], None]
@@ -266,6 +293,13 @@ class PreviewManager:
         self._notify("add", preview)
         return preview
 
+    def set_desktop(self, cap: str, on: bool) -> Optional[Preview]:
+        preview = self._items.get(cap)
+        if preview:
+            preview.desktop = on
+            self._hub.publish({"t": "preview", "op": "update", **preview.public()})
+        return preview
+
     def remove(self, cap: str) -> bool:
         preview = self._items.pop(cap, None)
         if preview:
@@ -311,6 +345,9 @@ class PreviewManager:
         headers = {k: v for k, v in (msg.get("h") or []) if isinstance(k, str) and isinstance(v, str) and k.lower() not in HOP_BY_HOP}
         target_host = f"[{preview.host}]" if ":" in preview.host else preview.host
         headers["Host"] = f"localhost:{preview.port}"  # dev servers reject unknown Host headers
+        if preview.desktop:  # the page must arrive uncompressed so its viewport tag can be rewritten
+            headers = {k: v for k, v in headers.items() if k.lower() != "accept-encoding"}
+            headers["Accept-Encoding"] = "identity"
         if self._session is None:
             # auto_decompress=False: the body stays exactly as the app sent it, matching its Content-Encoding.
             self._session = aiohttp.ClientSession(auto_decompress=False, cookie_jar=aiohttp.DummyCookieJar())
@@ -328,6 +365,9 @@ class PreviewManager:
                         return {"t": "httperr", "id": rid, "e": "Ответ слишком большой для превью."}
                     chunks.append(chunk)
                 payload = b"".join(chunks)
+                if (preview.desktop and "html" in resp.headers.get("Content-Type", "").lower()
+                        and not resp.headers.get("Content-Encoding")):
+                    payload = force_desktop_viewport(payload)
                 out = [[k, self._rewrite_header(k, v, preview.port)] for k, v in resp.headers.items() if k.lower() not in HOP_BY_HOP]
                 return {"t": "httpres", "id": rid, "s": resp.status, "h": out, "b": base64.b64encode(payload).decode()}
         except asyncio.TimeoutError:
@@ -396,6 +436,8 @@ class PreviewManager:
                 content_type += "; charset=utf-8"  # otherwise the browser guesses (and guesses wrong for Cyrillic)
             except UnicodeDecodeError:
                 pass
+        if preview.desktop and target.suffix.lower() in HTML_EXTENSIONS:
+            body = force_desktop_viewport(body)
         return reply(200, b"" if method == "HEAD" else body, content_type)
 
     @staticmethod

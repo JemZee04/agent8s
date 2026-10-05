@@ -240,6 +240,10 @@ notification. How it works and what to know:
   site cannot reach the app's stored key. Sites use absolute links (`/app.js`), so the preview takes the root of that
   hostname and is selected by a host-only `HttpOnly` cookie that the entry link sets; without the cookie, visitors of
   that hostname are redirected to the main domain. One preview per browser at a time.
+- **Sites without a mobile layout** (some admin panels show only their menu on a narrow screen): tick "Show as on a
+  computer" on the open preview and reload on the phone. The page is then laid out at desktop width (the page's
+  `viewport` tag is replaced) and can be zoomed. The HTML list contains only the chat's own files: folders that
+  belong to other projects/chats are left out.
 - Not supported: WebSockets (a dev server's hot reload will not live-update), streaming/SSE, responses over 5 MB.
   Redirects to `localhost:PORT` and `Domain=` cookies are rewritten so login flows keep working.
 - Needs the second hostname to resolve to the same nginx and be covered by its certificate; add this `server` next to

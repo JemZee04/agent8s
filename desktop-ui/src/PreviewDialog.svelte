@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import {
-    app, loadHtmlFiles, loadPorts, notify, openPreview, previews, refreshPreviews, selectedChat, shareFile, sharePort, stopPreview,
+    app, loadHtmlFiles, loadPorts, notify, openPreview, previews, refreshPreviews, selectedChat, setDesktopView, shareFile, sharePort, stopPreview,
     type HtmlFile, type PortInfo,
   } from './lib/state.svelte';
 
@@ -85,6 +85,10 @@
           <button class="btn" onclick={() => copy(p.url)}>Ссылка</button>
           <button class="btn danger" onclick={() => stopPreview(p.cap)}>Остановить</button>
         </div>
+        <label class="dim opt" title="Для сайтов без мобильной вёрстки: страница строится в ширину компьютера, её можно приближать">
+          <input type="checkbox" checked={!!p.desktop} onchange={(e) => setDesktopView(p.cap, e.currentTarget.checked)} />
+          Показывать как на компьютере (если у сайта нет мобильной версии)
+        </label>
         {#if p.kind === 'file' && p.root}
           <div class="dim note">Раздаётся папка: <code>{p.root}</code></div>
         {/if}
@@ -171,8 +175,8 @@
 {/snippet}
 
 <style>
-  .scrim { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.35); display: grid; place-items: center; z-index: 50; }
-  .dialog { width: min(560px, 94vw); max-height: 92vh; overflow-y: auto; background: var(--bg-elev); border: 1px solid var(--border); border-radius: 14px; padding: 20px 22px; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3); }
+  .scrim { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.35); display: grid; grid-template-columns: minmax(0, 1fr); place-items: center; z-index: 50; }
+  .dialog { min-width: 0; width: min(560px, 94vw); max-height: 92vh; overflow-y: auto; background: var(--bg-elev); border: 1px solid var(--border); border-radius: 14px; padding: 20px 22px; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3); }
   h2 { margin: 0 0 8px; font-size: 17px; }
   h3 { margin: 16px 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-faint); }
   .dim { color: var(--text-dim); font-size: 12.5px; line-height: 1.45; }
@@ -180,6 +184,8 @@
   code { font: 12px var(--mono); background: var(--bg-code); border-radius: 5px; padding: 0 5px; }
   .row { display: flex; align-items: center; gap: 8px; padding: 6px 0; flex-wrap: wrap; }
   .grow { flex: 1; min-width: 0; }
+  .opt { display: flex; gap: 8px; align-items: flex-start; margin: 0 0 6px; }
+  .opt input { margin-top: 2px; }
   .note { margin: -2px 0 4px; word-break: break-all; }
   .warn { background: var(--err-soft); color: var(--err); border-radius: 8px; padding: 6px 10px; font-size: 12.5px; margin-bottom: 6px; word-break: break-all; }
   .fname { word-break: break-all; }

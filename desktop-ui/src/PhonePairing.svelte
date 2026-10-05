@@ -69,8 +69,8 @@
 </div>
 
 <style>
-  .scrim { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.35); display: grid; place-items: center; z-index: 50; }
-  .dialog { width: min(520px, 92vw); max-height: 92vh; overflow-y: auto; background: var(--bg-elev); border: 1px solid var(--border); border-radius: 14px; padding: 20px 22px; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3); }
+  .scrim { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.35); display: grid; grid-template-columns: minmax(0, 1fr); place-items: center; z-index: 50; }
+  .dialog { min-width: 0; width: min(520px, 92vw); max-height: 92vh; overflow-y: auto; background: var(--bg-elev); border: 1px solid var(--border); border-radius: 14px; padding: 20px 22px; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3); }
   h2 { margin: 0 0 12px; font-size: 17px; }
   p { margin: 0 0 12px; line-height: 1.45; }
   .dim { color: var(--text-dim); font-size: 12.5px; }

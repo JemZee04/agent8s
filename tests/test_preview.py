@@ -626,3 +626,78 @@ async def test_what_a_page_asked_for_and_did_not_get_is_reported(course):
     await serve(mgr, preview.cap, "/missing.css")
     assert preview.misses == ["/pic.png", "/missing.css"]  # each once
     assert preview.public()["missing"] == ["/pic.png", "/missing.css"]
+
+
+# -- desktop-width view for sites without a mobile layout --------------------------------------------
+
+
+def test_the_viewport_is_replaced_or_added():
+    from agent8s.desktop.preview import DESKTOP_VIEWPORT, force_desktop_viewport
+
+    own = b'<head><meta name="viewport" content="width=device-width, initial-scale=1"><title>t</title></head>'
+    assert force_desktop_viewport(own) == b"<head>" + DESKTOP_VIEWPORT + b"<title>t</title></head>"
+    shouting = b"<HEAD><META NAME='viewport' CONTENT='width=device-width'></HEAD>"
+    assert force_desktop_viewport(shouting) == b"<HEAD>" + DESKTOP_VIEWPORT + b"</HEAD>"
+    assert force_desktop_viewport(b"<html><head lang='ru'><title>t</title>") == b"<html><head lang='ru'>" + DESKTOP_VIEWPORT + b"<title>t</title>"
+    assert force_desktop_viewport(b"<h1>fragment</h1>").startswith(DESKTOP_VIEWPORT)
+    kept = force_desktop_viewport(b'<meta charset="utf-8"><meta name="description" content="viewport">')
+    assert DESKTOP_VIEWPORT in kept and b'<meta name="description" content="viewport">' in kept  # only a real viewport tag is replaced
+
+
+async def test_desktop_view_applies_to_port_previews_and_can_be_switched_off(devserver):
+    from agent8s.desktop.preview import DESKTOP_VIEWPORT
+
+    hub = Hub()
+    queue = hub.subscribe()
+    mgr = PreviewManager(hub, set())
+    preview = mgr.create(1, devserver.port)
+    plain = await serve(mgr, preview.cap, "/")
+    assert DESKTOP_VIEWPORT not in plain["b"]
+
+    assert mgr.set_desktop(preview.cap, True).public()["desktop"] is True
+    await mgr.close()
+    page = await serve(mgr, preview.cap, "/")
+    assert DESKTOP_VIEWPORT in page["b"] and b"hello" in page["b"]
+    assert DESKTOP_VIEWPORT not in (await serve(mgr, preview.cap, "/app.js"))["b"]  # only HTML pages are touched
+    assert [e for e in iter(lambda: queue.get_nowait() if not queue.empty() else None, None) if e["op"] == "update"]
+
+    mgr.set_desktop(preview.cap, False)
+    assert DESKTOP_VIEWPORT not in (await serve(mgr, preview.cap, "/"))["b"]
+    assert mgr.set_desktop("0" * 32, True) is None
+    await mgr.close()
+
+
+async def test_desktop_view_does_not_break_compressed_pages(devserver):
+    from agent8s.desktop.preview import DESKTOP_VIEWPORT
+
+    mgr = PreviewManager(Hub(), set())
+    preview = mgr.create(1, devserver.port)
+    mgr.set_desktop(preview.cap, True)
+    res = await serve(mgr, preview.cap, "/gz")  # text/plain gzip: not HTML, passes through untouched
+    assert res["h"]["Content-Encoding"] == "gzip" and gzip.decompress(res["b"]) == b"zipped body"
+    assert DESKTOP_VIEWPORT not in res["b"]
+    await mgr.close()
+
+
+async def test_desktop_view_applies_to_shared_files_too(report):
+    from agent8s.desktop.preview import DESKTOP_VIEWPORT
+
+    mgr = PreviewManager(Hub(), set())
+    preview = mgr.create_file(1, str(report / "report.html"))
+    mgr.set_desktop(preview.cap, True)
+    page = await serve(mgr, preview.cap, "/")
+    assert DESKTOP_VIEWPORT in page["b"] and "Отчёт".encode() in page["b"]
+    assert DESKTOP_VIEWPORT not in (await serve(mgr, preview.cap, "/style.css"))["b"]
+
+
+def test_html_list_leaves_out_folders_that_belong_to_other_chats(tmp_path):
+    from agent8s.desktop.preview import list_html_files
+
+    mine = tmp_path / "workspace"
+    (mine / "docs").mkdir(parents=True)
+    (mine / "other-project" / "site").mkdir(parents=True)
+    (mine / "docs" / "a.html").write_text("a")
+    (mine / "other-project" / "site" / "b.html").write_text("b")
+    names = lambda files: sorted(f["rel"] for f in files)
+    assert names(list_html_files(str(mine))) == ["docs/a.html", "other-project/site/b.html"]
+    assert names(list_html_files(str(mine), exclude=[str(mine / "other-project")])) == ["docs/a.html"]

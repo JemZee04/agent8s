@@ -167,6 +167,17 @@ class Orchestrator:
         """Every project and chat folder: the places a shared HTML file may reach up to."""
         return [p.path for p in self._db.list_projects()] + [c.worktree_path for c in self._store.list_chats() if c.worktree_path]
 
+    def other_folders_inside(self, chat_id: int) -> list[str]:
+        """Folders of other chats/projects that sit inside this chat's folder."""
+        chat = self._require_chat(chat_id)
+        mine = Path(chat.worktree_path).resolve()
+        inside = []
+        for folder in self.known_folders():
+            candidate = Path(folder).resolve()
+            if candidate != mine and mine in candidate.parents and str(candidate) not in inside:
+                inside.append(str(candidate))
+        return inside
+
     def list_chats(self) -> list[dict[str, Any]]:
         return [self.chat_to_dict(c) for c in self._store.list_chats()]
 
@@ -283,7 +294,7 @@ class Orchestrator:
     # -- import from Claude Code --
 
     def claude_sessions(self) -> list[dict[str, Any]]:
-        imported = {c.sessions["claude"]["id"] for c in self._store.list_chats() if "claude" in c.sessions}
+        imported = {c.sessions["claude"]["id"]: c.id for c in self._store.list_chats() if "claude" in c.sessions}
         rows = []
         for s in importer.list_sessions():
             reason = ""
@@ -296,7 +307,7 @@ class Orchestrator:
             rows.append({
                 "id": s.id, "title": s.title, "cwd": s.cwd, "branch": s.branch, "mtime": s.mtime,
                 "size": s.size, "first_prompt": s.first_prompt,
-                "imported": s.id in imported, "importable": not reason, "reason": reason,
+                "imported": s.id in imported, "chat_id": imported.get(s.id), "importable": not reason, "reason": reason,
             })
         return rows
 
