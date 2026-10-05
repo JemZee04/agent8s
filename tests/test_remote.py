@@ -248,3 +248,34 @@ def test_relay_url_validation():
     for bad in ("http://example.com", "ftp://example.com", "example.com", "", "https://"):
         with pytest.raises(UserError):
             validate_relay_url(bad)
+
+
+async def test_pairing_survives_a_restart_without_repairing_the_phone(tmp_path):
+    relay = TestServer(make_app(None, "/agent8s"))
+    await relay.start_server()
+    url = f"http://127.0.0.1:{relay.port}/agent8s"
+    first = RemoteManager(tmp_path, Hub(), 1, "t")
+    await first.pair(url)
+    key_url = first.pairing_url()
+    await first.shutdown()  # the service stops (reboot, update, crash)
+
+    second = RemoteManager(tmp_path, Hub(), 1, "t")  # a fresh process reading the same data dir
+    assert second.configured() and second.pairing_url() == key_url  # same key: the phone needs no new QR code
+    await second.start()
+    for _ in range(100):
+        if second.info()["state"] == "connected":
+            break
+        await asyncio.sleep(0.02)
+    assert second.info()["state"] == "connected"  # and the Mac is back in the same room by itself
+    await second.shutdown()
+    await relay.close()
+
+
+def test_the_phone_may_import_sessions_and_use_previews_but_not_manage_pairing():
+    from agent8s.desktop.remote import ALLOWED_PATH
+
+    for path in ("/api/import/claude", "/api/previews", "/api/chats/3/ports", "/api/chats/3/preview",
+                 "/api/chats/3?limit=60&before=9"):
+        assert ALLOWED_PATH.match(path), path
+    for path in ("/api/remote", "/api/remote/pairing", "/api/remote/pair", "/api/chats/3/open", "/api/import/codex"):
+        assert not ALLOWED_PATH.match(path), path

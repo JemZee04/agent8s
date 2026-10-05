@@ -372,3 +372,31 @@ def test_preview_url_uses_a_different_origin_than_the_app(tmp_path):
     assert paired("http://127.0.0.1:8770/agent8s").preview_url(CAP) == f"http://127.0.0.1:8770/agent8s/p/{CAP}/"
     with pytest.raises(UserError, match="AGENT8S_PREVIEW_ORIGIN"):
         paired("https://www.example.com/agent8s").preview_url(CAP)  # no second name to derive
+
+
+async def test_web_probe_tells_sites_from_everything_else(devserver):
+    import socket as _socket
+    from agent8s.desktop.preview import is_web_page
+
+    assert await is_web_page(devserver.port) is True  # serves HTML at /
+
+    async def api(request):
+        return web.json_response({"ok": True})
+
+    async def denied(request):
+        return web.Response(status=403, text="no", content_type="text/html")
+
+    for handler, expected in ((api, False), (denied, False)):
+        app = web.Application()
+        app.router.add_get("/", handler)
+        server = TestServer(app, host="127.0.0.1")
+        await server.start_server()
+        assert await is_web_page(server.port) is expected  # JSON API / AirPlay-style 403: not a page to open
+        await server.close()
+
+    raw = _socket.socket()  # something that listens but does not speak HTTP (a database)
+    raw.bind(("127.0.0.1", 0))
+    raw.listen()
+    assert await is_web_page(raw.getsockname()[1]) is False
+    raw.close()
+    assert await is_web_page(1) is False  # nothing listening

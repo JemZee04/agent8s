@@ -17,6 +17,7 @@ from aiohttp import WSMsgType, web
 from ..config import DesktopConfig
 from ..db import Database
 from . import ports as portscan, service
+from .preview import is_web_page
 from .remote import RemoteManager
 from .runner import Busy, Hub, Orchestrator, UserError
 
@@ -301,6 +302,12 @@ def create_app(config: DesktopConfig, db: Database, orch: Orchestrator, hub: Hub
                 {"port": p.port, "command": p.command, "cwd": p.cwd, "kind": portscan.classify(p, chat["worktree_path"])}
                 for p in found
             ]
+            # A process name rarely says "this is a website": ask the port itself.
+            unknown = [r for r in rows if r["kind"] == "other"]
+            for row, web_page in zip(unknown, await asyncio.gather(*(is_web_page(r["port"]) for r in unknown))):
+                if web_page:
+                    row["kind"] = "web"
+            order["web"] = 1
             rows.sort(key=lambda r: (order[r["kind"]], r["port"]))
             return web.json_response({"ports": rows, "previews": remote.list_previews(chat["id"])})
 

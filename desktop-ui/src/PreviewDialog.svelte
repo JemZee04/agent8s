@@ -95,7 +95,7 @@
   <div class="row">
     <span class="grow">
       <b>localhost:{p.port}</b> <span class="dim">{p.command}</span>
-      {#if p.kind === 'mine'}<span class="badge">из этого чата</span>{/if}
+      {#if p.kind === 'mine'}<span class="badge">из этого чата</span>{:else if p.kind === 'web'}<span class="badge">отвечает веб-страницей</span>{/if}
     </span>
     <button class="btn" disabled={busy === p.port || shared.has(p.port)} onclick={() => share(p.port)}>
       {shared.has(p.port) ? 'Открыто' : app.relayMode ? 'Открыть здесь' : 'Открыть на телефоне'}

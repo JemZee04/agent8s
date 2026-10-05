@@ -32,7 +32,7 @@ export const app = $state({
 });
 
 export interface PreviewInfo { cap: string; port: number; chat_id: number; exp: number; url: string }
-export interface PortInfo { port: number; command: string; cwd: string; kind: 'mine' | 'dev' | 'other' }
+export interface PortInfo { port: number; command: string; cwd: string; kind: 'mine' | 'dev' | 'web' | 'other' }
 export const previews = $state({ list: [] as PreviewInfo[], ports: [] as PortInfo[], loading: false });
 
 export const diff = $state({
@@ -129,6 +129,7 @@ async function bootstrap() {
   app.agents = data.catalog.agents;
   app.projects = data.projects;
   app.chats = data.chats;
+  void loadImportList(true);
   void api.get<{ previews: PreviewInfo[] }>('/api/previews').then((r) => (previews.list = r.previews), () => {});
   const remembered = Number(store.get('agent8s-selected'));
   const target = app.chats.find((c) => c.id === (app.selectedId ?? remembered)) ?? sorted()[0];
@@ -511,12 +512,14 @@ export interface ImportableSession {
 
 export const imports = $state({ sessions: [] as ImportableSession[], loading: false, busy: false });
 
-export async function loadImportList() {
+export const freshSessions = () => imports.sessions.filter((s) => s.importable).length;
+
+export async function loadImportList(quiet = false) {
   imports.loading = true;
   try {
     imports.sessions = (await api.get<{ sessions: ImportableSession[] }>('/api/import/claude')).sessions;
   } catch (e) {
-    fail(e);
+    if (!quiet) fail(e); // the badge is a convenience: an old server without import must not nag
   } finally {
     imports.loading = false;
   }

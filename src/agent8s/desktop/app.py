@@ -180,8 +180,14 @@ def _open_window(url: str) -> None:
         webbrowser.open(url)
         threading.Event().wait()
         return
+    width, height = 1320, 860
+    try:  # a fixed 860 px is taller than the usable area of a 13" laptop: the bottom bar would be cut off
+        screen = webview.screens[0]
+        width, height = min(width, screen.width - 80), min(height, screen.height - 140)
+    except Exception:
+        pass
     webview.create_window(
-        "agent8s", url, width=1320, height=860, min_size=(900, 560), js_api=WindowApi(), text_select=True
+        "agent8s", url, width=width, height=height, min_size=(720, 480), js_api=WindowApi(), text_select=True
     )
     webview.start()
 

@@ -64,6 +64,24 @@ def _reachable_host(port: int) -> Optional[str]:
     return None
 
 
+async def is_web_page(port: int) -> bool:
+    """Does something on this port answer `GET /` with a web page? Process names say little
+    (a dev server can be called anything), the response does."""
+    host = await asyncio.to_thread(_reachable_host, port)
+    if host is None:
+        return False
+    target = f"[{host}]" if ":" in host else host
+    try:
+        async with aiohttp.ClientSession(cookie_jar=aiohttp.DummyCookieJar()) as session:
+            async with session.get(
+                f"http://{target}:{port}/", allow_redirects=False, timeout=aiohttp.ClientTimeout(total=1.2),
+                headers={"Host": f"localhost:{port}", "Accept": "text/html"},
+            ) as resp:
+                return resp.status < 400 and "html" in resp.headers.get("Content-Type", "").lower()
+    except (aiohttp.ClientError, asyncio.TimeoutError, UnicodeError, ValueError):
+        return False  # not HTTP at all (a database, a daemon), or too slow to be a dev server
+
+
 class PreviewManager:
     def __init__(self, hub: Hub, own_ports: set[int], ttl: float = TTL_SECONDS,
                  url_for: Optional[Callable[[str], str]] = None):
