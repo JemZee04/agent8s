@@ -220,7 +220,11 @@ The same **🌐 Preview** dialog lists the HTML files in the chat's folder (newe
 is on top) and takes a path to any other `.html` file. The Mac serves the file together with what a web page uses next to
 it (images, styles, scripts, fonts, `.json`/`.txt`/`.md`/`.pdf`) so it renders properly and links between pages work. The
 folder is *not* shared as a whole: dotfiles, `..`, symlinks pointing out of it and anything else (keys, `.env`,
-databases) answer 404. Same link lifetime, relay trust and second hostname as the site previews below.
+databases) answer 404. Pages written for a folder tree work too: the app reads the HTML, and if it refers to
+`../assets/style.css` or to the site root (`/assets/app.css`) it shares the ancestor folder those need — never beyond the
+project the file belongs to, and not at all for a file outside every project — and opens the page at the address its
+own links expect (the dialog shows which folder is shared). Folder URLs, `/docs/intro` → `intro.html` and
+`intro/index.html` behave like a static host, and anything a page asked for but did not get is listed in the dialog. Same link lifetime, relay trust and second hostname as the site previews below.
 
 ### Open a site the agent runs on `localhost` on the phone
 

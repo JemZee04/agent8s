@@ -31,7 +31,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Sequence
 from urllib.parse import urlparse
 
 import aiohttp
@@ -368,9 +368,10 @@ class RemoteManager:
             raise UserError("Не могу вывести адрес для превью: задайте AGENT8S_PREVIEW_ORIGIN (второе имя вашего сервера).")
         return f"{origin}{parts.path.rstrip('/')}/p/{cap}/"
 
-    def create_preview(self, chat_id: int, port: Optional[int] = None, file: Optional[str] = None) -> dict[str, Any]:
+    def create_preview(self, chat_id: int, port: Optional[int] = None, file: Optional[str] = None,
+                       known_folders: Sequence[str] = ()) -> dict[str, Any]:
         self.preview_url("0" * 32)  # fails early (not paired / no preview host) before anything is registered
-        preview = self.previews.create_file(chat_id, file) if file else self.previews.create(chat_id, port or 0)
+        preview = self.previews.create_file(chat_id, file, known_folders) if file else self.previews.create(chat_id, port or 0)
         return {**preview.public(), "url": self.preview_url(preview.cap)}
 
     def list_previews(self, chat_id: Optional[int] = None) -> list[dict[str, Any]]:

@@ -163,6 +163,10 @@ class Orchestrator:
     def get_chat(self, chat_id: int) -> dict[str, Any]:
         return self.chat_to_dict(self._require_chat(chat_id))
 
+    def known_folders(self) -> list[str]:
+        """Every project and chat folder: the places a shared HTML file may reach up to."""
+        return [p.path for p in self._db.list_projects()] + [c.worktree_path for c in self._store.list_chats() if c.worktree_path]
+
     def list_chats(self) -> list[dict[str, Any]]:
         return [self.chat_to_dict(c) for c in self._store.list_chats()]
 

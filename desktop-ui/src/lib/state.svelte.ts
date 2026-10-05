@@ -31,7 +31,7 @@ export const app = $state({
   now: Date.now(),
 });
 
-export interface PreviewInfo { cap: string; port: number; chat_id: number; exp: number; url: string; kind: 'port' | 'file'; name: string }
+export interface PreviewInfo { cap: string; port: number; chat_id: number; exp: number; url: string; kind: 'port' | 'file'; name: string; root?: string; missing?: string[] }
 export interface HtmlFile { path: string; rel: string; size: number; mtime: number }
 export interface PortInfo { port: number; command: string; cwd: string; kind: 'mine' | 'dev' | 'web' | 'other' }
 export const previews = $state({ list: [] as PreviewInfo[], ports: [] as PortInfo[], files: [] as HtmlFile[], loading: false });
@@ -567,6 +567,12 @@ export async function loadPorts(chatId: number) {
   } finally {
     previews.loading = false;
   }
+}
+
+export async function refreshPreviews() {
+  try {
+    previews.list = (await api.get<{ previews: PreviewInfo[] }>('/api/previews')).previews;
+  } catch { /* the next tick tries again */ }
 }
 
 export async function loadHtmlFiles(chatId: number) {

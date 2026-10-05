@@ -319,7 +319,7 @@ def create_app(config: DesktopConfig, db: Database, orch: Orchestrator, hub: Hub
             number = data.get("port")
             if not file and (not isinstance(number, int) or isinstance(number, bool)):
                 raise UserError("Нужен номер порта или путь к HTML-файлу.")
-            return web.json_response(remote.create_preview(chat["id"], number, file), status=201)
+            return web.json_response(remote.create_preview(chat["id"], number, file, orch.known_folders()), status=201)
 
         @routes.get("/api/chats/{chat_id}/html")
         async def chat_html(request: web.Request) -> web.Response:

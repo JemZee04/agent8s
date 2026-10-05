@@ -13,14 +13,15 @@ import base64
 import logging
 import mimetypes
 import os
+import posixpath
 import re
 import secrets
 import socket
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Optional
-from urllib.parse import unquote, urlsplit
+from typing import Any, Callable, Optional, Sequence
+from urllib.parse import quote, unquote, urlsplit
 
 import aiohttp
 
@@ -68,6 +69,76 @@ def list_html_files(folder: str, limit: int = 100, max_depth: int = 4) -> list[d
     return found[:limit]
 
 
+_REF = re.compile(r"""(?:href|src|poster)\s*=\s*["']([^"']+)["']|url\(\s*["']?([^)"']+)""", re.I)
+_EXTERNAL = re.compile(r"^([a-z][a-z0-9+.-]*:|//)", re.I)
+
+
+def local_references(html: str) -> list[str]:
+    """Paths a page points at on its own server: not links to other sites, anchors or data: URLs."""
+    refs = []
+    for match in _REF.finditer(html):
+        ref = (match.group(1) or match.group(2) or "").strip()
+        if ref and not ref.startswith("#") and not _EXTERNAL.match(ref):
+            refs.append(ref.split("#")[0].split("?")[0])
+    return [r for r in refs if r]
+
+
+def choose_root(file: Path, limit: Path) -> Path:
+    """The folder to serve for a file, so its own links resolve.
+
+    Pages written for a folder tree refer to siblings of their parent ("../assets/style.css") or to the
+    site root ("/assets/app.css"). Serving only the file's own folder would 404 all of that and leave
+    the page unstyled. So widen to the ancestor those references need, but never beyond `limit`
+    (the project the file belongs to), and not at all for files outside any known project.
+    """
+    base = file.parent
+    if limit != base and limit not in base.parents:
+        return base
+    try:
+        refs = local_references(file.read_text(encoding="utf-8", errors="replace")[:500_000])
+    except OSError:
+        return base
+
+    levels_up = 0
+    for ref in refs:
+        if ref.startswith("/"):
+            continue
+        depth = lowest = 0
+        for part in ref.split("/")[:-1]:
+            if part == "..":
+                depth -= 1
+                lowest = min(lowest, depth)
+            elif part not in ("", "."):
+                depth += 1
+        levels_up = max(levels_up, -lowest)
+    root = base
+    for _ in range(min(levels_up, len(base.relative_to(limit).parts))):
+        root = root.parent
+
+    absolute = [r.lstrip("/") for r in refs if r.startswith("/") and not r.startswith("//")]
+    if absolute:  # "/assets/x.css" means the site root: the nearest ancestor where such a path exists
+        for candidate in [root, *root.parents]:
+            if any((candidate / ref).exists() for ref in absolute):
+                return candidate
+            if candidate == limit:
+                break
+    return root
+
+
+def enclosing_folder(file: Path, folders: Sequence[str]) -> Path:
+    """The innermost known project/chat folder that contains `file`, else the file's own folder."""
+    best: Optional[Path] = None
+    for folder in folders:
+        try:
+            candidate = Path(folder).resolve()
+        except OSError:
+            continue
+        if candidate == file.parent or candidate in file.parents:
+            if best is None or len(candidate.parts) > len(best.parts):
+                best = candidate
+    return best or file.parent
+
+
 @dataclass
 class Preview:
     cap: str
@@ -79,6 +150,7 @@ class Preview:
     kind: str = "port"  # "port": a site on localhost; "file": an HTML file (and its folder) served from disk
     file: str = ""
     root: str = ""
+    misses: list[str] = field(default_factory=list)  # what the page asked for and could not get
 
     @property
     def name(self) -> str:
@@ -86,7 +158,7 @@ class Preview:
 
     def public(self) -> dict[str, Any]:
         return {"cap": self.cap, "port": self.port, "chat_id": self.chat_id, "exp": self.exp,
-                "kind": self.kind, "name": self.name}
+                "kind": self.kind, "name": self.name, "root": self.root, "missing": self.misses[-8:]}
 
 
 Listener = Callable[[str, Preview], None]
@@ -169,7 +241,7 @@ class PreviewManager:
         self._notify("add", preview)
         return preview
 
-    def create_file(self, chat_id: int, file: str) -> Preview:
+    def create_file(self, chat_id: int, file: str, known_folders: Sequence[str] = ()) -> Preview:
         self._prune()
         path = Path(file).expanduser()
         if not path.is_absolute():
@@ -187,8 +259,9 @@ class PreviewManager:
             return existing
         if len(self._items) >= MAX_PREVIEWS:
             raise UserError(f"Одновременно можно держать не больше {MAX_PREVIEWS} превью — остановите ненужные.")
+        root = choose_root(path, enclosing_folder(path, known_folders))
         preview = Preview(secrets.token_hex(16), 0, chat_id, "", time.time() + self._ttl,
-                          kind="file", file=str(path), root=str(path.parent))
+                          kind="file", file=str(path), root=str(root))
         self._items[preview.cap] = preview
         self._notify("add", preview)
         return preview
@@ -272,26 +345,50 @@ class PreviewManager:
             return reply(405, b"Method Not Allowed")
         if not isinstance(raw_path, str) or not raw_path.startswith("/") or "\x00" in raw_path:
             return {"t": "httperr", "id": rid, "e": "Некорректный запрос."}
-        relative = unquote(urlsplit(raw_path).path).lstrip("/")
+        url_path = unquote(urlsplit(raw_path).path)
+        relative = url_path.lstrip("/")
         root = Path(preview.root)
+        entry = Path(preview.file).relative_to(root).as_posix()
+
+        def missed() -> dict[str, Any]:
+            if url_path not in preview.misses:
+                preview.misses = (preview.misses + [url_path])[-12:]
+            return reply(404, b"Not found")
+
+        def redirect(location: str) -> dict[str, Any]:
+            return {"t": "httpres", "id": rid, "s": 302, "h": [["Location", location], ["Cache-Control", "no-cache"]], "b": ""}
+
         if not relative:
-            target = Path(preview.file)
+            if entry == Path(preview.file).name:
+                target = Path(preview.file)
+            else:  # the page lives deeper in the folder: open it at the address its own links expect
+                return redirect("/" + quote(entry))
         else:
-            parts = Path(relative).parts
-            if any(part.startswith(".") or part == ".." for part in parts):  # dotfiles and traversal
-                return reply(404, b"Not found")
+            if any(part.startswith(".") or part == ".." for part in Path(relative).parts):  # dotfiles and traversal
+                return missed()
             target = (root / relative).resolve()
             # resolve() follows symlinks, so a link pointing out of the folder fails this check too
-            if root not in target.parents or target.suffix.lower() not in SERVED_EXTENSIONS:
-                return reply(404, b"Not found")
+            if target != root and root not in target.parents:
+                return missed()
+            if target.is_dir():
+                if not url_path.endswith("/"):  # relative links inside depend on the trailing slash
+                    return redirect(url_path + "/" + (f"?{urlsplit(raw_path).query}" if urlsplit(raw_path).query else ""))
+                target = (target / "index.html").resolve()
+            elif not target.exists() and not target.suffix:  # /docs/intro -> intro.html or intro/index.html
+                for guess in (target.with_name(target.name + ".html"), target / "index.html"):
+                    if guess.is_file():
+                        target = guess.resolve()
+                        break
+            if (target != root and root not in target.parents) or target.suffix.lower() not in SERVED_EXTENSIONS:
+                return missed()
         try:
             if not target.is_file():
-                return reply(404, b"Not found")
+                return missed()
             if target.stat().st_size > MAX_RESPONSE:
                 return {"t": "httperr", "id": rid, "e": "Файл слишком большой для превью."}
             body = target.read_bytes()
         except OSError:
-            return reply(404, b"Not found")
+            return missed()
         content_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
         if content_type.startswith("text/") or content_type in ("application/json", "application/javascript"):
             try:

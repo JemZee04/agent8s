@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import {
-    app, loadHtmlFiles, loadPorts, notify, openPreview, previews, selectedChat, shareFile, sharePort, stopPreview,
+    app, loadHtmlFiles, loadPorts, notify, openPreview, previews, refreshPreviews, selectedChat, shareFile, sharePort, stopPreview,
     type HtmlFile, type PortInfo,
   } from './lib/state.svelte';
 
@@ -17,6 +17,9 @@
       void loadPorts(chat.id);
       void loadHtmlFiles(chat.id);
     }
+    // What a page asked for and did not get shows up here while you look at it on the phone.
+    const timer = window.setInterval(() => void refreshPreviews(), 4000);
+    return () => window.clearInterval(timer);
   });
 
   const mine = $derived(previews.list.filter((p) => p.chat_id === chat?.id));
@@ -82,6 +85,15 @@
           <button class="btn" onclick={() => copy(p.url)}>Ссылка</button>
           <button class="btn danger" onclick={() => stopPreview(p.cap)}>Остановить</button>
         </div>
+        {#if p.kind === 'file' && p.root}
+          <div class="dim note">Раздаётся папка: <code>{p.root}</code></div>
+        {/if}
+        {#if p.missing?.length}
+          <div class="warn">
+            Страница запросила, но не получила: {p.missing.join(', ')}.
+            Скорее всего, это файлы вне раздаваемой папки или не веб-типа (ключи, базы — не отдаются намеренно).
+          </div>
+        {/if}
       {/each}
     {/if}
 
@@ -168,6 +180,8 @@
   code { font: 12px var(--mono); background: var(--bg-code); border-radius: 5px; padding: 0 5px; }
   .row { display: flex; align-items: center; gap: 8px; padding: 6px 0; flex-wrap: wrap; }
   .grow { flex: 1; min-width: 0; }
+  .note { margin: -2px 0 4px; word-break: break-all; }
+  .warn { background: var(--err-soft); color: var(--err); border-radius: 8px; padding: 6px 10px; font-size: 12.5px; margin-bottom: 6px; word-break: break-all; }
   .fname { word-break: break-all; }
   .badge { font-size: 11px; background: var(--accent-soft); color: var(--accent); border-radius: 8px; padding: 0 7px; margin-left: 6px; }
   details { margin-top: 6px; }

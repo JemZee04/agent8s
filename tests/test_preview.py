@@ -486,7 +486,8 @@ async def test_a_shared_file_never_exposes_anything_else(report):
                  "/escape.txt",  # a symlink pointing outside
                  "/.hidden/a.html", "/img/.", "//etc/passwd"):
         res = await serve(mgr, cap, path)
-        assert res.get("s") == 404 or res["t"] == "httperr", path
+        assert res.get("s") in (302, 404) or res.get("t") == "httperr", path  # 302: a folder asking for its slash
+        assert b"SECRET" not in res.get("b", b"") and b"PRIVATE" not in res.get("b", b"")
     assert b"outside" not in (await serve(mgr, cap, "/escape.txt")).get("b", b"")
 
 
@@ -518,3 +519,110 @@ async def test_a_shared_file_opens_through_the_relay(report):
     await link.stop()
     await previews.close()
     await relay_srv.close()
+
+
+# -- pages that live inside a folder tree -----------------------------------------------------------
+
+
+@pytest.fixture
+def course(tmp_path):
+    """job-review/{assets/style.css, lessons/0001.html -> ../assets/style.css, reference/x.md}."""
+    project = tmp_path / "job-review"
+    (project / "assets").mkdir(parents=True)
+    (project / "lessons").mkdir()
+    (project / "reference").mkdir()
+    (project / "assets" / "style.css").write_text("body{color:navy}")
+    (project / "assets" / "oral.js").write_text("window.ok=1")
+    (project / "reference" / "topic.md").write_text("# topic")
+    (project / "lessons" / "0001.html").write_text(
+        '<link rel="stylesheet" href="../assets/style.css"><script src="../assets/oral.js"></script>'
+        '<a href="../reference/topic.md">ref</a><a href="https://example.com/x.css">external</a>', encoding="utf-8")
+    (project / "lessons" / "0002.html").write_text('<h1>no ../ here</h1><img src="pic.png">')
+    (project / ".env").write_text("SECRET=1")
+    (project / "config.json").write_text('{"k": "only inside the project"}')
+    (tmp_path / "elsewhere.txt").write_text("above the project")
+    return project
+
+
+def test_page_references_are_understood():
+    from agent8s.desktop.preview import local_references
+
+    html = ('<link href="../a/b.css"><script src=/abs/app.js></script><img src="pic.png?v=3#x"><a href="#top">t</a>'
+            '<a href="https://cdn.example/x.css">c</a><img src="//cdn.example/y.png"><img src="data:image/png;base64,AAA">'
+            '<div style="background:url(\'bg/x.jpg\')"></div>')
+    assert local_references(html) == ["../a/b.css", "pic.png", "bg/x.jpg"] or set(local_references(html)) >= {"../a/b.css", "pic.png", "bg/x.jpg"}
+
+
+def test_the_shared_folder_grows_just_enough_for_the_page_and_never_past_the_project(course, tmp_path):
+    from agent8s.desktop.preview import choose_root
+
+    limit = course
+    assert choose_root(course / "lessons" / "0001.html", limit) == course  # needs ../assets
+    assert choose_root(course / "lessons" / "0002.html", limit) == course / "lessons"  # needs nothing above itself
+    assert choose_root(course / "lessons" / "0001.html", course / "lessons") == course / "lessons"  # limit stops it
+    assert choose_root(course / "lessons" / "0001.html", tmp_path / "unrelated") == course / "lessons"  # outside every project
+
+
+def test_absolute_site_paths_find_the_site_root(tmp_path):
+    from agent8s.desktop.preview import choose_root
+
+    site = tmp_path / "proj" / "build"
+    (site / "assets" / "css").mkdir(parents=True)
+    (site / "docs" / "intro").mkdir(parents=True)
+    (site / "assets" / "css" / "styles.css").write_text("x")
+    page = site / "docs" / "intro" / "index.html"
+    page.write_text('<link rel="stylesheet" href="/assets/css/styles.css">')
+    assert choose_root(page, tmp_path / "proj") == site  # "/assets/..." means the build folder
+
+
+async def test_a_lesson_gets_its_styles_and_is_opened_at_its_own_address(course):
+    mgr = PreviewManager(Hub(), set())
+    preview = mgr.create_file(1, str(course / "lessons" / "0001.html"), [str(course)])
+    assert preview.root == str(course) and preview.public()["root"] == str(course)
+    cap = preview.cap
+
+    entry = await serve(mgr, cap, "/")
+    assert entry["s"] == 302 and entry["h"]["Location"] == "/lessons/0001.html"  # so "../assets/x" resolves
+    page = await serve(mgr, cap, "/lessons/0001.html")
+    assert page["s"] == 200 and page["h"]["Content-Type"] == "text/html; charset=utf-8"
+    assert (await serve(mgr, cap, "/assets/style.css"))["b"] == b"body{color:navy}"  # what ../assets/style.css becomes
+    assert (await serve(mgr, cap, "/assets/oral.js"))["s"] == 200
+    assert (await serve(mgr, cap, "/reference/topic.md"))["s"] == 200
+    assert preview.misses == []
+
+
+async def test_widening_still_keeps_secrets_and_the_rest_of_the_disk_out(course):
+    mgr = PreviewManager(Hub(), set())
+    cap = mgr.create_file(1, str(course / "lessons" / "0001.html"), [str(course)]).cap
+    for path in ("/.env", "/../elsewhere.txt", "/%2e%2e/elsewhere.txt", "/lessons/../../elsewhere.txt"):
+        res = await serve(mgr, cap, path)
+        assert res.get("s") in (302, 404) or res.get("t") == "httperr", path
+        assert b"SECRET" not in res.get("b", b"") and b"above the project" not in res.get("b", b"")
+    # a page with no need for the parent folder does not get it
+    narrow = mgr.create_file(1, str(course / "lessons" / "0002.html"), [str(course)])
+    assert narrow.root == str(course / "lessons")
+    assert (await serve(mgr, narrow.cap, "/config.json"))["s"] == 404
+
+
+async def test_folders_and_extensionless_urls_behave_like_a_static_host(tmp_path):
+    site = tmp_path / "build"
+    (site / "docs" / "intro").mkdir(parents=True)
+    (site / "docs" / "intro" / "index.html").write_text("<h1>intro</h1>")
+    (site / "docs" / "guide.html").write_text("<h1>guide</h1>")
+    (site / "index.html").write_text('<a href="/docs/intro">intro</a>')
+    mgr = PreviewManager(Hub(), set())
+    cap = mgr.create_file(1, str(site / "index.html"), [str(tmp_path)]).cap
+    assert b"intro" in (await serve(mgr, cap, "/docs/intro/"))["b"]  # folder -> its index.html
+    redirect = await serve(mgr, cap, "/docs/intro")
+    assert redirect["s"] == 302 and redirect["h"]["Location"] == "/docs/intro/"  # relative links need the slash
+    assert b"guide" in (await serve(mgr, cap, "/docs/guide"))["b"]  # /docs/guide -> guide.html
+
+
+async def test_what_a_page_asked_for_and_did_not_get_is_reported(course):
+    mgr = PreviewManager(Hub(), set())
+    preview = mgr.create_file(1, str(course / "lessons" / "0002.html"), [str(course)])
+    await serve(mgr, preview.cap, "/pic.png")
+    await serve(mgr, preview.cap, "/missing.css")
+    await serve(mgr, preview.cap, "/missing.css")
+    assert preview.misses == ["/pic.png", "/missing.css"]  # each once
+    assert preview.public()["missing"] == ["/pic.png", "/missing.css"]
