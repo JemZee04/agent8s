@@ -150,6 +150,41 @@ running `codex resume` (or anything else) directly in a terminal — that
 bypasses agent8s's tracking entirely, and the bot's view of the task's
 session/diff state will drift from whatever actually happened on disk.
 
+## Desktop app
+
+A native window with full chats (like the Codex / Claude desktop apps) on top of the same
+orchestration: several chats run in parallel, each in its own worktree, and **you can switch the
+agent and model inside one chat without losing context**.
+
+```bash
+uv sync --extra desktop                      # pywebview (native WKWebView window, no Electron)
+(cd desktop-ui && npm install && npm run build)
+uv run agent8s-desktop                       # --no-window prints a URL for a browser instead
+```
+
+Needs no Telegram credentials; it shares the database and the project list with the bot.
+
+- **Switching agents.** claude and codex keep sessions in incompatible native formats, so the app
+  owns the canonical history. When an agent picks a chat up (or starts it) and missed turns,
+  its next prompt is prefixed with a compact transcript of exactly those turns plus the
+  working-tree status. Switching only the model (same agent) resumes the native session as-is.
+  Tool outputs are left out of the transcript on purpose: the files on disk are the source of truth.
+- **Where is my code?** The header always shows the project, branch and the worktree path
+  (click to copy, "open folder" for Finder; Terminal / VS Code in the ⋯ menu). "Direct" mode works
+  in the project folder itself instead of a worktree.
+- **Changes panel** (⇧⌘D): live diff, commit, and "merge into <default branch>" (aborted cleanly on conflict).
+- **Live progress:** token streaming, every tool call as it happens, elapsed time, Stop (⌘.) which
+  kills the agent's whole process group.
+- Shortcuts: ⌘N new chat, ⌘1…9 jump to a chat, ⇧⌘D changes, ⌘. stop.
+- Security: the server listens on 127.0.0.1 only and requires a per-launch token (kept in the URL
+  fragment, never on disk) plus Host/Origin checks, so web pages open in your browser cannot drive
+  your agents. Agent output is rendered through an escaping Markdown renderer under a strict CSP.
+- UI development: `agent8s-desktop --no-window --port 8765 --token dev` and `npm run dev` in `desktop-ui`.
+- Tests: `uv run pytest`.
+
+Not done yet: importing existing terminal sessions from `~/.claude` / `~/.codex`, LLM-written
+handoff summaries (the transcript is truncated, not summarised), queuing a message while an agent works.
+
 ## Ad hoc questions: /ask
 
 ```

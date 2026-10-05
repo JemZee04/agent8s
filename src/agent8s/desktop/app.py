@@ -64,6 +64,12 @@ class WindowApi:
         result = window.create_file_dialog(webview.FOLDER_DIALOG)
         return result[0] if result else None
 
+    def open_url(self, url: str) -> None:
+        # A link inside the app window must open in the real browser, not
+        # replace the app. Only plain web links; anything else is ignored.
+        if url.startswith(("http://", "https://", "mailto:")):
+            webbrowser.open(url)
+
 
 def _bind(port: int) -> socket.socket:
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
