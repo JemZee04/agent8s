@@ -31,3 +31,5 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/agent8s"]
+# The built UI is gitignored; without this it would be left out of the wheel.
+artifacts = ["src/agent8s/desktop/web/**"]

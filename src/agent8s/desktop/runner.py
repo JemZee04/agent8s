@@ -13,6 +13,7 @@ from ..config import DesktopConfig
 from ..db import Database, Project
 from .catalog import build_catalog
 from .drivers import ClaudeDriver, CodexDriver, TurnRequest
+from . import importer
 from .handoff import build_turn_prompt
 from .store import Chat, Message, Store
 
@@ -23,6 +24,9 @@ DIFF_LIMIT = 2_000_000
 FLUSH_INTERVAL = 1.0
 _SAFE_VALUE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,99}$")  # never starts with "-": it would read as a CLI flag
 _MISSING_SESSION = re.compile(r"(no conversation found|session.*not found|thread.*not found|no rollout)", re.I)
+
+
+TEMP_PREFIXES = ("/tmp/", "/private/tmp/", "/var/folders/", "/private/var/folders/")
 
 
 class Busy(Exception):
@@ -156,19 +160,23 @@ class Orchestrator:
         )
         return data
 
+    def get_chat(self, chat_id: int) -> dict[str, Any]:
+        return self.chat_to_dict(self._require_chat(chat_id))
+
     def list_chats(self) -> list[dict[str, Any]]:
         return [self.chat_to_dict(c) for c in self._store.list_chats()]
 
-    def get_chat_with_messages(self, chat_id: int) -> dict[str, Any]:
+    def get_chat_with_messages(self, chat_id: int, limit: Optional[int] = None, before: Optional[int] = None) -> dict[str, Any]:
         chat = self._require_chat(chat_id)
-        messages = [message_to_dict(m) for m in self._store.list_messages(chat_id)]
+        page, more = self._store.list_messages(chat_id, limit, before)
+        messages = [message_to_dict(m) for m in page]
         live = self._live.get(chat_id)
-        if live:
+        if live and before is None:
             # The in-memory message is ahead of the database (text deltas are
             # only flushed periodically); rev lets the client drop stale ops.
             messages = [m for m in messages if m["id"] != live.message["id"]]
             messages.append({**live.message, "rev": live.rev})
-        return {"chat": self.chat_to_dict(chat), "messages": messages}
+        return {"chat": self.chat_to_dict(chat), "messages": messages, "has_more": more}
 
     # -- projects --
 
@@ -267,6 +275,78 @@ class Orchestrator:
                 await asyncio.to_thread(git_ops.remove_worktree, Path(project.path), Path(chat.worktree_path), chat.branch)
         self._store.delete_chat(chat_id)
         self._hub.publish({"t": "chat_deleted", "chat_id": chat_id})
+
+    # -- import from Claude Code --
+
+    def claude_sessions(self) -> list[dict[str, Any]]:
+        imported = {c.sessions["claude"]["id"] for c in self._store.list_chats() if "claude" in c.sessions}
+        rows = []
+        for s in importer.list_sessions():
+            reason = ""
+            if s.id in imported:
+                reason = "уже в agent8s"
+            elif not s.cwd or not Path(s.cwd).is_dir():
+                reason = "папка сессии больше не существует"
+            elif s.cwd.startswith(TEMP_PREFIXES):
+                reason = "временная папка (скорее всего, служебный запуск)"
+            rows.append({
+                "id": s.id, "title": s.title, "cwd": s.cwd, "branch": s.branch, "mtime": s.mtime,
+                "size": s.size, "first_prompt": s.first_prompt,
+                "imported": s.id in imported, "importable": not reason, "reason": reason,
+            })
+        return rows
+
+    async def import_claude(self, session_ids: list[str]) -> list[dict[str, Any]]:
+        known = {s.id: s for s in await asyncio.to_thread(importer.list_sessions)}
+        results = []
+        for session_id in session_ids:
+            info = known.get(session_id)
+            if info is None:
+                results.append({"id": session_id, "ok": False, "error": "Сессия не найдена."})
+                continue
+            try:
+                chat = await self._import_session(info)
+                results.append({"id": session_id, "ok": True, "chat_id": chat.id})
+            except UserError as exc:
+                results.append({"id": session_id, "ok": False, "error": str(exc)})
+        return results
+
+    async def _import_session(self, info: importer.SessionInfo) -> Chat:
+        if any(c.sessions.get("claude", {}).get("id") == info.id for c in self._store.list_chats()):
+            raise UserError("Эта сессия уже импортирована.")
+        parsed = await asyncio.to_thread(importer.parse_session, info.path)
+        if not parsed.messages:
+            raise UserError("В сессии нет сообщений.")
+        cwd = Path(parsed.cwd or info.cwd)
+        if not cwd.is_dir():
+            raise UserError(f"Папка сессии не найдена: {cwd}")
+        try:
+            root = await asyncio.to_thread(git_ops.toplevel, cwd)
+            branch = await asyncio.to_thread(git_ops.current_branch, cwd)
+            default_branch = await asyncio.to_thread(git_ops.default_branch, root)
+        except git_ops.GitError:
+            # Not a repository (notes, study folders, ...): the chat still works in place;
+            # only the diff/commit/merge tools have nothing to act on.
+            root, branch, default_branch = cwd, "", ""
+
+        project = next((p for p in self._db.list_projects() if Path(p.path).resolve() == root.resolve()), None)
+        if project is None:
+            name, n = root.name or "project", 2
+            while self._db.get_project_by_name(name):
+                name, n = f"{root.name}-{n}", n + 1
+            project = self._db.add_project(name, str(root), default_branch)
+
+        # `claude --resume` finds a session only from the directory it started in, so the chat
+        # works in place (direct mode) in exactly that directory.
+        chat = self._store.create_chat(project.id, parsed.title, "direct", branch, str(cwd), "claude", created_at=parsed.first_at)
+        last_id = self._store.add_messages_bulk(chat.id, [
+            (m.role, "claude" if m.role == "assistant" else None, m.model, m.parts, m.status, m.created_at)
+            for m in parsed.messages
+        ])
+        self._store.set_session(chat.id, "claude", info.id, seen=last_id)
+        fresh = self._require_chat(chat.id)
+        self._hub.publish({"t": "chat", "chat": self.chat_to_dict(fresh)})
+        return fresh
 
     # -- git actions --
 

@@ -2,7 +2,7 @@
   import { onMount, tick } from 'svelte';
   import { native } from './lib/api';
   import {
-    addWritableDir, app, deleteChat, notify, openFolder, patchChat, selectedChat, toggleDiff,
+    addWritableDir, app, deleteChat, loadEarlier, notify, openFolder, patchChat, previews, selectedChat, toggleDiff,
   } from './lib/state.svelte';
   import Composer from './Composer.svelte';
   import MessageView from './MessageView.svelte';
@@ -104,13 +104,20 @@
       </div>
       <div class="row2">
         <span class="chip">{chat.project_name}</span>
-        <button class="chip click" onclick={() => copy(chat.branch, 'Название ветки')} title="Скопировать ветку">
-          ⎇ {chat.branch}{chat.mode === 'direct' ? ' · прямо в проекте' : ''}
-        </button>
+        {#if chat.branch}
+          <button class="chip click" onclick={() => copy(chat.branch, 'Название ветки')} title="Скопировать ветку">
+            ⎇ {chat.branch}{chat.mode === 'direct' ? ' · прямо в проекте' : ''}
+          </button>
+        {:else}
+          <span class="chip" title="Папка не под git: дифф, коммит и слияние недоступны">без git · прямо в папке</span>
+        {/if}
         <button class="chip click path" onclick={() => copy(chat.worktree_path, 'Путь')} title="{chat.worktree_path} — нажмите, чтобы скопировать">
           {shortPath(chat.worktree_path)}
         </button>
         {#if !app.relayMode}<button class="chip click" onclick={() => openFolder('finder')}>Открыть папку</button>{/if}
+        <button class="chip click" onclick={() => (app.previewOpen = true)} title="Открыть на телефоне сайт, запущенный на localhost">
+          🌐 Превью{#if previews.list.some((p) => p.chat_id === chat.id)} · {previews.list.filter((p) => p.chat_id === chat.id).length}{/if}
+        </button>
         {#each chat.extra_dirs as d (d)}<span class="chip" title="Разрешена запись">＋ {shortPath(d)}</span>{/each}
       </div>
     </header>
@@ -124,6 +131,9 @@
             <p>Опишите задачу — агент будет работать в папке</p>
             <code>{chat.worktree_path}</code>
           </div>
+        {/if}
+        {#if chat && app.hasMore[chat.id]}
+          <button class="earlier" onclick={() => loadEarlier(chat.id)}>Показать более ранние сообщения</button>
         {/if}
         {#each messages ?? [] as m (m.id)}
           <MessageView message={m} />
@@ -164,6 +174,8 @@
   .path { font-family: var(--mono); font-size: 11.5px; }
   .scroller { flex: 1; overflow-y: auto; min-height: 0; }
   .content { max-width: 820px; margin: 0 auto; padding: 8px 24px 20px; }
+  .earlier { display: block; margin: 8px auto 4px; background: transparent; border: 1px solid var(--border); border-radius: 14px; padding: 4px 14px; color: var(--text-dim); }
+  .earlier:hover { background: var(--bg-hover); color: var(--text); }
   .placeholder { color: var(--text-dim); text-align: center; padding: 70px 0; }
   .placeholder code { font: 12px var(--mono); background: var(--bg-code); border-radius: 6px; padding: 2px 8px; user-select: text; }
   .empty { margin: auto; text-align: center; max-width: 420px; padding: 0 20px; }

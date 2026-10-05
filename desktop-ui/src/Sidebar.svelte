@@ -52,6 +52,7 @@
       <button class="ghost" onclick={async () => (await ask('Забыть этот компьютер?', 'Ключ будет удалён с телефона. Чтобы подключиться снова, нужно будет заново отсканировать QR-код.', 'Забыть', true)) && unpair()}>Отключить телефон</button>
     {:else}
       <button class="ghost" onclick={() => (app.phoneDialogOpen = true)} title="Подключить телефон">📱 Телефон</button>
+      <button class="ghost" onclick={() => (app.importOpen = true)} title="Перенести чаты из Claude Code">⇩ Импорт</button>
     {/if}
   </div>
 </aside>
@@ -59,7 +60,7 @@
 <style>
   aside { background: var(--bg-side); border-right: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; }
   .top { display: flex; align-items: center; justify-content: space-between; padding: max(14px, env(safe-area-inset-top)) 12px 10px 16px; }
-  .bottom { border-top: 1px solid var(--border); padding: 6px 10px max(8px, env(safe-area-inset-bottom)); }
+  .bottom { display: flex; gap: 4px; border-top: 1px solid var(--border); padding: 6px 10px max(8px, env(safe-area-inset-bottom)); }
   .brand { font-weight: 650; letter-spacing: 0.01em; }
   nav { overflow-y: auto; padding: 0 8px 12px; flex: 1; }
   .ghead { display: flex; align-items: center; justify-content: space-between; padding: 12px 8px 4px; }

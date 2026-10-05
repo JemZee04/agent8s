@@ -182,8 +182,85 @@ Needs no Telegram credentials; it shares the database and the project list with 
 - UI development: `agent8s-desktop --no-window --port 8765 --token dev` and `npm run dev` in `desktop-ui`.
 - Tests: `uv run pytest`.
 
-Not done yet: importing existing terminal sessions from `~/.claude` / `~/.codex`, LLM-written
+Not done yet: importing Codex sessions (Claude Code sessions are covered, see below), LLM-written
 handoff summaries (the transcript is truncated, not summarised), queuing a message while an agent works.
+
+### Run it in the background (autostart)
+
+```bash
+uv run agent8s-desktop --install-service     # --uninstall-service, --service-status
+```
+
+Installs a macOS LaunchAgent: a headless `agent8s-desktop` starts at login, restarts after a crash and keeps
+the phone connected whether or not a window is open. `agent8s-desktop` (no flags) then just opens a window on
+that running service. Things worth knowing:
+
+- The service lives **outside the repository**: its own virtualenv copy of the code, database and worktrees
+  under `~/Library/Application Support/agent8s`. (A process started by launchd cannot read `~/Documents`
+  without a permission prompt nobody can answer, so it would hang on its own venv; this avoids that. The first
+  install copies your existing projects and chats into the service's database, after which it has its own.)
+- After changing the code, run `--install-service` again to update the copy (it is safe while running).
+- Settings from `.env` that matter (`AGENT8S_RELAY_URL`, `AGENT8S_PREVIEW_ORIGIN`, `AGENT8S_PROJECTS_DIR`,
+  `AGENT8S_CLAUDE_*`, `AGENT8S_CODEX_SANDBOX`) are copied into the service at install time; the service cannot
+  read the repo's `.env` (it holds secrets it does not need, such as the Telegram token).
+- For development use `agent8s-desktop --standalone`: it starts its own server on the repo's data instead.
+
+### Import chats from Claude Code
+
+Sidebar → "⇩ Import" lists your sessions from `~/.claude/projects`; pick some (or "select all new") and they become
+chats with their full history. The chat works in place in the folder the session ran in (`claude --resume` only
+finds a session from there), the next Claude turn resumes that very session, and switching to Codex hands it the
+history like any other chat. Folders that are not git repositories import fine (just without diff/commit tools),
+sessions whose folder no longer exists or that were launched from temp folders are greyed out. The session files
+are only read, never changed. Long histories load a page at a time ("Show earlier messages").
+
+### Open a site the agent runs on `localhost` on the phone
+
+Ask the agent to "run the site on localhost", then open **🌐 Preview** in the chat (desktop or phone): it lists what
+listens on this Mac (processes from the chat's folder first, anything that looks like a dev server next, the rest
+folded away) or takes a port. The link lives 8 hours; when it is created on the desktop the phone gets an "Open"
+notification. How it works and what to know:
+
+- Requests from the phone's browser go phone → relay → your Mac → `localhost:PORT` and back. Unlike chat traffic this
+  is **not end-to-end encrypted** (the relay has to read pages to serve them), so previews trust the relay.
+- The page is served from a **second hostname** of the same server (default: `www.` + your domain, or set
+  `AGENT8S_PREVIEW_ORIGIN`). That makes it a different browser origin than the app, so scripts of the previewed
+  site cannot reach the app's stored key. Sites use absolute links (`/app.js`), so the preview takes the root of that
+  hostname and is selected by a host-only `HttpOnly` cookie that the entry link sets; without the cookie, visitors of
+  that hostname are redirected to the main domain. One preview per browser at a time.
+- Not supported: WebSockets (a dev server's hot reload will not live-update), streaming/SSE, responses over 5 MB.
+  Redirects to `localhost:PORT` and `Domain=` cookies are rewritten so login flows keep working.
+- Needs the second hostname to resolve to the same nginx and be covered by its certificate; add this `server` next to
+  the one from the Phone section (relay container `agent8s-relay`, cookie `a8p`):
+
+```nginx
+limit_req_zone $binary_remote_addr zone=agent8s_pv:2m rate=100r/s;       # in http { }
+
+server {
+    listen 443 ssl;
+    server_name www.example.com;
+    # ssl_certificate ... (the same certificate)
+    location ^~ /agent8s/p/ {                      # entry link: sets the cookie
+        resolver 127.0.0.11 valid=10s ipv6=off;
+        set $agent8s_relay http://agent8s-relay:8765;
+        proxy_pass $agent8s_relay;
+        proxy_http_version 1.1; proxy_set_header Connection "";
+        proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+    location / {
+        if ($cookie_a8p = "") { return 301 https://example.com$request_uri; }   # not a preview visitor
+        resolver 127.0.0.11 valid=10s ipv6=off;
+        set $agent8s_relay http://agent8s-relay:8765;
+        proxy_pass $agent8s_relay/agent8s/pv$request_uri;
+        limit_req zone=agent8s_pv burst=300 nodelay;
+        proxy_http_version 1.1; proxy_set_header Connection "";
+        proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 90s; client_max_body_size 1m;
+    }
+}
+```
 
 ## Phone
 
@@ -249,8 +326,8 @@ use the key; serving the relay on its own subdomain removes that. "New QR code" 
 disconnects every phone; "Disconnect" deletes it. Anyone holding the QR code can run agents on your Mac:
 treat it like an SSH key.
 
-Not done yet: a direct same-network mode, push notifications (iOS limits them for Home Screen web apps),
-starting `agent8s-desktop` automatically at login.
+Not done yet: a direct same-network mode, push notifications (iOS limits them for Home Screen web apps).
+To have the Mac side start by itself at login, see "Run it in the background" above.
 
 ## Ad hoc questions: /ask
 

@@ -21,11 +21,21 @@ Wire protocol (JSON text frames):
   client -> relay  <opaque text frame>             forwarded to the host as "msg"
   relay  -> client {"t":"presence","host":true|false}   plaintext, starts with "{"
   relay  -> client <opaque text frame>
+
+Previews (a site on the Mac's localhost opened in the phone's browser) are NOT end-to-end
+encrypted: the relay must read the pages to serve them.
+  host   -> relay  {"t":"preview","op":"add","cap":<32 hex>,"exp":<unix>} / {"op":"del","cap":...}
+  relay  -> host   {"t":"http","id":n,"cap":..,"m":..,"p":<path?query>,"h":[[k,v]..],"b":<base64>}
+  host   -> relay  {"t":"httpres","id":n,"s":status,"h":[[k,v]..],"b":<base64>} | {"t":"httperr","id":n,"e":msg}
+  browser GET {prefix}/p/<cap>/...  sets cookie a8p=<cap> and redirects to /...;
+  browser *   {prefix}/pv/<path>    is served for the cap in that cookie (nginx maps the preview
+                                     hostname's root onto it, so root-relative links keep working).
 """
 from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import json
 import logging
 import re
@@ -49,6 +59,16 @@ RATE_BURST = 60
 RATE_PER_SECOND = 30
 RELAY_KEY = web.AppKey("relay", object)
 ROOM_RE = re.compile(r"^[0-9a-f]{32}$")
+CAP_RE = ROOM_RE
+MAX_PREVIEWS_PER_ROOM = 8
+MAX_INFLIGHT_PER_ROOM = 32
+MAX_REQUEST_BODY = 1024 * 1024
+PREVIEW_TIMEOUT = 60.0
+MAX_PREVIEW_TTL = 24 * 3600
+PREVIEW_COOKIE = "a8p"
+HOP_BY_HOP = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailers",
+              "transfer-encoding", "upgrade", "content-length", "host", "x-real-ip", "x-forwarded-for",
+              "x-forwarded-proto", "x-forwarded-host"}
 
 CLOSE_GOING_AWAY = 1001
 CLOSE_REPLACED = 4001
@@ -97,10 +117,33 @@ class Room:
     clients: dict[str, Peer] = field(default_factory=dict)
 
 
+@dataclass
+class PreviewReg:
+    room_id: str
+    exp: float
+
+
 class Relay:
     def __init__(self) -> None:
         self.rooms: dict[str, Room] = {}
         self.per_ip: dict[str, int] = {}
+        self.previews: dict[str, PreviewReg] = {}
+        self.pending: dict[int, tuple[str, asyncio.Future]] = {}
+        self.next_id = 0
+
+    def live_preview(self, cap: str) -> Optional[PreviewReg]:
+        reg = self.previews.get(cap)
+        if reg and reg.exp < time.time():
+            self.previews.pop(cap, None)
+            return None
+        return reg
+
+    def drop_room_previews(self, room_id: str) -> None:
+        for cap in [c for c, r in self.previews.items() if r.room_id == room_id]:
+            del self.previews[cap]
+        for rid, (owner, future) in list(self.pending.items()):
+            if owner == room_id and not future.done():
+                future.set_result({"t": "httperr", "e": "Компьютер отключился."})
 
     def stats(self) -> dict:
         return {
@@ -150,7 +193,7 @@ def _cleanup_room(relay: Relay, room: Room) -> None:
 def make_app(web_dir: Optional[Path] = None, prefix: str = "") -> web.Application:
     prefix = prefix.rstrip("/")
     relay = Relay()
-    app = web.Application()
+    app = web.Application(client_max_size=MAX_REQUEST_BODY)
 
     async def serve(request: web.Request, role: str) -> web.WebSocketResponse:
         ip = _client_ip(request)
@@ -187,6 +230,79 @@ def make_app(web_dir: Optional[Path] = None, prefix: str = "") -> web.Applicatio
     app.router.add_get(f"{prefix}/ws/host", host_ws)
     app.router.add_get(f"{prefix}/ws/client", client_ws)
     app.router.add_get(f"{prefix}/health", health)
+
+    def _preview_error(status: int, text: str) -> web.Response:
+        return web.Response(status=status, text=text, headers={"X-Robots-Tag": "noindex", "Cache-Control": "no-store"})
+
+    async def preview_entry(request: web.Request) -> web.Response:
+        cap = request.match_info["cap"]
+        reg = relay.live_preview(cap) if CAP_RE.match(cap) else None
+        if reg is None:
+            return _preview_error(404, "Превью не найдено или истекло. Откройте новое из приложения.")
+        tail = request.match_info.get("tail", "")
+        response = web.HTTPFound("/" + tail + (f"?{request.query_string}" if request.query_string else ""))
+        response.set_cookie(
+            PREVIEW_COOKIE, cap, max_age=max(1, int(reg.exp - time.time())), path="/",
+            secure=request.headers.get("X-Forwarded-Proto", "https") != "http", httponly=True, samesite="Lax",
+        )
+        response.headers["X-Robots-Tag"] = "noindex"
+        raise response
+
+    async def preview_proxy(request: web.Request) -> web.Response:
+        cap = request.cookies.get(PREVIEW_COOKIE, "")
+        reg = relay.live_preview(cap) if CAP_RE.match(cap) else None
+        if reg is None:
+            return _preview_error(404, "Превью не найдено или истекло. Откройте новую ссылку из приложения.")
+        room = relay.rooms.get(reg.room_id)
+        if room is None or room.host is None:
+            return _preview_error(502, "Компьютер не в сети.")
+        if request.headers.get("Upgrade", "").lower() == "websocket":
+            return _preview_error(501, "WebSocket в превью не поддерживается (живая перезагрузка dev-сервера не работает).")
+        if sum(1 for owner, _ in relay.pending.values() if owner == reg.room_id) >= MAX_INFLIGHT_PER_ROOM:
+            return _preview_error(429, "Слишком много одновременных запросов.")
+        try:
+            body = await request.read()  # the whole body (bounded by client_max_size), not just the first chunk
+        except web.HTTPRequestEntityTooLarge:
+            return _preview_error(413, "Слишком большой запрос.")
+
+        # Forward the app's own cookies, never ours.
+        headers = [[k, v] for k, v in request.headers.items() if k.lower() not in HOP_BY_HOP | {"cookie"}]
+        cookies = "; ".join(p for p in request.headers.get("Cookie", "").split("; ") if not p.startswith(PREVIEW_COOKIE + "="))
+        if cookies:
+            headers.append(["Cookie", cookies])
+        path = request.match_info["path"]
+        rid = relay.next_id = relay.next_id + 1
+        future = asyncio.get_running_loop().create_future()
+        relay.pending[rid] = (reg.room_id, future)
+        try:
+            if not room.host.push({
+                "t": "http", "id": rid, "cap": cap, "m": request.method,
+                "p": "/" + path + (f"?{request.query_string}" if request.query_string else ""),
+                "h": headers, "b": base64.b64encode(body).decode(),
+            }):
+                return _preview_error(503, "Компьютер занят, повторите.")
+            try:
+                result = await asyncio.wait_for(future, PREVIEW_TIMEOUT)
+            except asyncio.TimeoutError:
+                return _preview_error(504, "Компьютер не ответил вовремя.")
+        finally:
+            relay.pending.pop(rid, None)
+        if result.get("t") != "httpres":
+            return _preview_error(502, str(result.get("e") or "Ошибка превью."))
+        response = web.Response(status=int(result.get("s", 502)), body=base64.b64decode(result.get("b", "")))
+        for key, value in result.get("h", []):
+            lower = str(key).lower()
+            if lower in HOP_BY_HOP:
+                continue
+            if lower == "set-cookie" and str(value).lower().startswith(PREVIEW_COOKIE + "="):
+                continue  # the app must not be able to replace the preview cookie
+            response.headers.add(str(key), str(value))
+        response.headers.setdefault("X-Robots-Tag", "noindex")
+        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        return response
+
+    app.router.add_get(prefix + "/p/{cap}/{tail:.*}", preview_entry)
+    app.router.add_route("*", prefix + "/pv/{path:.*}", preview_proxy)
 
     if web_dir is not None and (web_dir / "index.html").exists():
         _add_static(app, web_dir, prefix)
@@ -225,13 +341,24 @@ async def _run_host(relay: Relay, ws: web.WebSocketResponse, room_id: str) -> No
 
     try:
         async for msg in ws:
-            if msg.type != WSMsgType.TEXT or not host.allow():
+            if msg.type != WSMsgType.TEXT:
                 continue
             try:
                 data = json.loads(msg.data)
             except ValueError:
                 continue
-            if not isinstance(data, dict) or data.get("t") != "msg" or not isinstance(data.get("d"), str):
+            if not isinstance(data, dict):
+                continue
+            kind = data.get("t")
+            if kind == "preview":
+                _host_preview(relay, room_id, data)
+                continue
+            if kind in ("httpres", "httperr"):  # not rate-limited: bounded by the in-flight cap
+                entry = relay.pending.get(data.get("id")) if isinstance(data.get("id"), int) else None
+                if entry and entry[0] == room_id and not entry[1].done():
+                    entry[1].set_result(data)
+                continue
+            if kind != "msg" or not isinstance(data.get("d"), str) or not host.allow():
                 continue
             target = data.get("c")
             recipients = list(room.clients.items()) if target == "*" else (
@@ -245,10 +372,32 @@ async def _run_host(relay: Relay, ws: web.WebSocketResponse, room_id: str) -> No
             room.host = None
             for client in room.clients.values():
                 client.push({"t": "presence", "host": False})
+        if room.host is None:  # (a replacement host re-registers its own previews)
+            relay.drop_room_previews(room_id)
         host.push(None)
         await asyncio.gather(writer, return_exceptions=True)
         _cleanup_room(relay, room)
         log.info("host down (room %s…)", room_id[:4])
+
+
+def _host_preview(relay: Relay, room_id: str, data: dict) -> None:
+    cap = data.get("cap")
+    if not isinstance(cap, str) or not CAP_RE.match(cap):
+        return
+    if data.get("op") == "del":
+        if relay.previews.get(cap) and relay.previews[cap].room_id == room_id:
+            del relay.previews[cap]
+    elif data.get("op") == "add":
+        exp = data.get("exp")
+        if not isinstance(exp, (int, float)) or isinstance(exp, bool):
+            return
+        mine = [c for c, r in relay.previews.items() if r.room_id == room_id]
+        if cap not in mine and len(mine) >= MAX_PREVIEWS_PER_ROOM:
+            return
+        owner = relay.previews.get(cap)
+        if owner and owner.room_id != room_id:
+            return  # a capability belongs to the room that created it
+        relay.previews[cap] = PreviewReg(room_id, min(float(exp), time.time() + MAX_PREVIEW_TTL))
 
 
 async def _run_client(relay: Relay, ws: web.WebSocketResponse, room_id: str) -> None:

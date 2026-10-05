@@ -31,11 +31,12 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 from urllib.parse import urlparse
 
 import aiohttp
 
+from .preview import Preview, PreviewManager
 from .remote_crypto import C2H, H2C, b64url, b64url_decode, derive, new_key, open_frame, seal
 from .runner import Hub, UserError
 
@@ -47,7 +48,10 @@ MAX_PARALLEL = 8
 EVENT_BATCH_SECONDS = 0.03
 # What a phone may call. Deliberately excludes /open (would pop windows up on
 # the Mac) and /api/remote* (a phone must not manage its own pairing).
-ALLOWED_PATH = re.compile(r"^/api/(bootstrap|discover|projects|chats(/\d+(/(send|stop|diff|commit|merge|dirs))?)?)$")
+ALLOWED_PATH = re.compile(
+    r"^/api/(bootstrap|discover|projects|previews(/[0-9a-f]{32})?"
+    r"|chats(/\d+(\?(?:limit|before)=\d+(?:&(?:limit|before)=\d+)?|/(send|stop|diff|commit|merge|dirs|ports|preview))?)?)$"
+)
 ALLOWED_METHODS = {"GET", "POST", "PATCH", "DELETE"}
 
 
@@ -73,8 +77,10 @@ def validate_relay_url(url: str) -> str:
 
 
 class RelayLink:
-    def __init__(self, relay_url: str, key: bytes, hub: Hub, local_base: str, local_token: str):
+    def __init__(self, relay_url: str, key: bytes, hub: Hub, local_base: str, local_token: str,
+                 previews: Optional[PreviewManager] = None):
         self.room_id, self._enc = derive(key)
+        self._previews = previews
         self._url = ws_url(relay_url)
         self._hub = hub
         self._local_base = local_base.rstrip("/")
@@ -131,6 +137,7 @@ class RelayLink:
 
                 outbox: asyncio.Queue[str] = asyncio.Queue(maxsize=1000)
                 events = self._hub.subscribe()
+                unsubscribe = self._share_previews(outbox)
                 workers = [
                     asyncio.create_task(self._reader(ws, outbox)),
                     asyncio.create_task(self._sender(ws, outbox)),
@@ -145,6 +152,33 @@ class RelayLink:
                         task.cancel()
                     await asyncio.gather(*workers, return_exceptions=True)
                     self._hub.unsubscribe(events)
+                    unsubscribe()
+
+    # -- previews --
+
+    def _share_previews(self, outbox: asyncio.Queue) -> Callable[[], None]:
+        """Tell the relay about every live preview now, and about changes while connected."""
+        if self._previews is None:
+            return lambda: None
+
+        def announce(op: str, preview: Preview) -> None:
+            frame = json.dumps({"t": "preview", "op": op, "cap": preview.cap, "exp": preview.exp})
+            try:
+                outbox.put_nowait(frame)
+            except asyncio.QueueFull:
+                log.warning("outbox full; a preview update was dropped")
+
+        for preview in self._previews.list():
+            announce("add", preview)
+        return self._previews.subscribe(announce)
+
+    async def _serve_http(self, request: dict[str, Any], outbox: asyncio.Queue) -> None:
+        async with self._sem:
+            response = await self._previews.fetch(request)  # type: ignore[union-attr]
+        try:
+            outbox.put_nowait(json.dumps(response, separators=(",", ":")))
+        except asyncio.QueueFull:
+            log.warning("outbox full; dropping a preview response")
 
     # -- relay traffic --
 
@@ -166,6 +200,11 @@ class RelayLink:
             if not isinstance(data, dict):
                 continue
             kind, cid = data.get("t"), data.get("c")
+            if kind == "http" and self._previews is not None:
+                task = asyncio.create_task(self._serve_http(data, outbox))
+                self._tasks.add(task)
+                task.add_done_callback(self._tasks.discard)
+                continue
             if not isinstance(cid, str):
                 continue
             if kind == "join":
@@ -246,9 +285,12 @@ class RelayLink:
 class RemoteManager:
     """Owns the pairing key on disk and the (optional) running RelayLink."""
 
-    def __init__(self, data_dir: Path, hub: Hub, port: int, token: str, default_relay: Optional[str] = None):
+    def __init__(self, data_dir: Path, hub: Hub, port: int, token: str, default_relay: Optional[str] = None,
+                 preview_origin: Optional[str] = None):
         self._file = data_dir / "remote.json"
         self._hub = hub
+        self.previews = PreviewManager(hub, {port}, url_for=self.preview_url)
+        self._preview_origin = preview_origin
         self._base = f"http://127.0.0.1:{port}"
         self._token = token
         self.default_relay = default_relay
@@ -268,7 +310,7 @@ class RemoteManager:
     async def start(self) -> None:
         cfg = self._load()
         if cfg and self._link is None:
-            self._link = RelayLink(cfg["relay"], b64url_decode(cfg["key"]), self._hub, self._base, self._token)
+            self._link = RelayLink(cfg["relay"], b64url_decode(cfg["key"]), self._hub, self._base, self._token, self.previews)
             self._link.start()
             self._keep_awake()
 
@@ -290,6 +332,7 @@ class RemoteManager:
 
     async def shutdown(self) -> None:
         await self._stop_link()
+        await self.previews.close()
 
     async def _stop_link(self) -> None:
         if self._link:
@@ -307,6 +350,37 @@ class RemoteManager:
                 self._awake = subprocess.Popen(["caffeinate", "-i", "-w", str(os.getpid())])
             except OSError:
                 pass
+
+    def preview_url(self, cap: str) -> str:
+        """Where the phone opens a preview. Must be a different *origin* than the app (it runs
+        arbitrary dev-site scripts, which must not reach the app's stored key)."""
+        cfg = self._load()
+        if cfg is None:
+            raise UserError("Сначала подключите телефон (кнопка «Телефон»): превью идёт через реле.")
+        parts = urlparse(cfg["relay"])
+        if self._preview_origin:
+            origin = self._preview_origin.rstrip("/")
+        elif parts.hostname in ("127.0.0.1", "localhost"):
+            origin = f"{parts.scheme}://{parts.netloc}"
+        elif parts.hostname and not parts.hostname.startswith("www."):
+            origin = f"{parts.scheme}://www.{parts.netloc}"
+        else:
+            raise UserError("Не могу вывести адрес для превью: задайте AGENT8S_PREVIEW_ORIGIN (второе имя вашего сервера).")
+        return f"{origin}{parts.path.rstrip('/')}/p/{cap}/"
+
+    def create_preview(self, chat_id: int, port: int) -> dict[str, Any]:
+        self.preview_url("0" * 32)  # fails early (not paired / no preview host) before anything is registered
+        preview = self.previews.create(chat_id, port)
+        return {**preview.public(), "url": self.preview_url(preview.cap)}
+
+    def list_previews(self, chat_id: Optional[int] = None) -> list[dict[str, Any]]:
+        result = []
+        for preview in self.previews.list(chat_id):
+            try:
+                result.append({**preview.public(), "url": self.preview_url(preview.cap)})
+            except UserError:
+                pass
+        return result
 
     def pairing_url(self) -> Optional[str]:
         cfg = self._load()

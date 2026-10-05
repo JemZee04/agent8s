@@ -89,6 +89,10 @@ def current_branch(path: Path) -> str:
     return _run(["rev-parse", "--abbrev-ref", "HEAD"], path).strip()
 
 
+def toplevel(path: Path) -> Path:
+    return Path(_run(["rev-parse", "--show-toplevel"], path).strip())
+
+
 def status_short(path: Path) -> str:
     return _run(["status", "--short"], path).strip()
 

@@ -5,9 +5,11 @@
   import ChatView from './ChatView.svelte';
   import ConfirmDialog from './ConfirmDialog.svelte';
   import DiffPanel from './DiffPanel.svelte';
+  import ImportClaude from './ImportClaude.svelte';
   import NewChat from './NewChat.svelte';
   import PairedSheet from './PairedSheet.svelte';
   import PhonePairing from './PhonePairing.svelte';
+  import PreviewDialog from './PreviewDialog.svelte';
   import Unpaired from './Unpaired.svelte';
   import Sidebar from './Sidebar.svelte';
   import Toast from './Toast.svelte';
@@ -111,6 +113,8 @@
 
 {#if app.newChatOpen}<NewChat />{/if}
 {#if app.phoneDialogOpen}<PhonePairing />{/if}
+{#if app.importOpen}<ImportClaude />{/if}
+{#if app.previewOpen}<PreviewDialog />{/if}
 {#if app.freshPairLink}<PairedSheet />{/if}
 <ConfirmDialog />
 <Toast />

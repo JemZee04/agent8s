@@ -4,7 +4,9 @@ import argparse
 import asyncio
 import logging
 import os
+import json
 import secrets
+import signal
 import socket
 import sys
 import threading
@@ -16,6 +18,7 @@ from aiohttp import web
 from ..config import load_desktop_config
 from ..db import Database
 from ..singleton import AlreadyRunningError, acquire_singleton_lock
+from . import service
 from .remote import RemoteManager
 from .runner import Hub, Orchestrator
 from .server import create_app
@@ -82,12 +85,27 @@ def _bind(port: int) -> socket.socket:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="agent8s-desktop", description="Десктоп-клиент agent8s")
     parser.add_argument("--port", type=int, default=0, help="порт (по умолчанию случайный свободный)")
-    parser.add_argument("--no-window", action="store_true", help="только сервер: напечатать адрес, окно не открывать")
+    parser.add_argument("--no-window", action="store_true", help="только сервер, без окна (так работает фоновый сервис)")
+    parser.add_argument("--standalone", action="store_true", help="не подключаться к уже запущенному сервису, поднять свой сервер")
+    parser.add_argument("--install-service", action="store_true", help="установить автозапуск при входе в систему (macOS)")
+    parser.add_argument("--uninstall-service", action="store_true", help="убрать автозапуск")
+    parser.add_argument("--service-status", action="store_true", help="показать состояние автозапуска")
     parser.add_argument("--token", default=None, help="фиксированный токен (для dev-сервера Vite)")
     parser.add_argument("--allow-origin", action="append", default=[], help="доп. Origin (dev-сервер Vite)")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+
+    if args.install_service or args.uninstall_service or args.service_status:
+        return service.cli(do_install=args.install_service, do_uninstall=args.uninstall_service)
+
+    # With the background service running, the window is just a client of it.
+    if not args.no_window and not args.standalone:
+        running = service.running_service_url()
+        if running:
+            print("agent8s-desktop: подключаюсь к работающему сервису", flush=True)
+            _open_window(running)
+            return 0
 
     # Paths like AGENT8S_DATA_DIR=./data are relative; resolve them against the
     # repository, not against whatever directory the app was launched from.
@@ -114,7 +132,11 @@ def main(argv: list[str] | None = None) -> int:
     sock = _bind(args.port)
     port = sock.getsockname()[1]
     token = args.token or secrets.token_urlsafe(32)
-    remote = RemoteManager(config.data_dir, hub, port, token, os.environ.get("AGENT8S_RELAY_URL", "").strip() or None)
+    remote = RemoteManager(
+        config.data_dir, hub, port, token,
+        os.environ.get("AGENT8S_RELAY_URL", "").strip() or None,
+        os.environ.get("AGENT8S_PREVIEW_ORIGIN", "").strip() or None,
+    )
     app = create_app(config, db, orch, hub, token, port, args.allow_origin, remote)
 
     server = ServerThread(orch, app, sock)
@@ -122,18 +144,32 @@ def main(argv: list[str] | None = None) -> int:
     server.ready.wait(10)
     # The token rides in the URL fragment: it is never sent to the server nor logged.
     url = f"http://127.0.0.1:{port}/#token={token}"
+    info_file = config.data_dir / "desktop.json"
+    _write_private(info_file, json.dumps({"port": port, "token": token, "pid": os.getpid()}))
 
     try:
         if args.no_window:
             print(f"agent8s-desktop: {url}", flush=True)
-            threading.Event().wait()  # until Ctrl+C
+            stop = threading.Event()
+            # launchd stops a service with SIGTERM: shut down cleanly so running agents are terminated
+            # (they live in their own process groups and would otherwise be orphaned).
+            for sig in (signal.SIGTERM, signal.SIGINT):
+                signal.signal(sig, lambda *_: stop.set())
+            stop.wait()
         else:
             _open_window(url)
     except KeyboardInterrupt:
         pass
     finally:
+        info_file.unlink(missing_ok=True)
         server.stop()
     return 0
+
+
+def _write_private(path, text: str) -> None:
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(text)
 
 
 def _open_window(url: str) -> None:

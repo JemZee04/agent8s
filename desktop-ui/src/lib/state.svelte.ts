@@ -1,4 +1,4 @@
-import { api, ApiError, connect, relayMode, setRelay } from './api';
+import { api, ApiError, connect, openExternal, relayMode, setRelay } from './api';
 import { parseDiff, type DiffFile } from './diff';
 import { forgetKeys, loadKeys, pairFromText, RelayTransport, type LinkState } from './relay';
 import type { AgentSpec, Chat, Message, Project, ServerEvent } from './types';
@@ -12,6 +12,8 @@ export const app = $state({
   mobile: false,
   mobileView: 'list' as 'list' | 'chat',
   phoneDialogOpen: false,
+  importOpen: false,
+  hasMore: {} as Record<number, boolean>,
   freshPairLink: '',
   agents: [] as AgentSpec[],
   projects: [] as Project[],
@@ -23,10 +25,15 @@ export const app = $state({
   diffOpen: false,
   newChatOpen: false,
   newChatProject: null as number | null,
-  toast: null as null | { text: string; kind: 'error' | 'info' },
+  toast: null as null | { text: string; kind: 'error' | 'info'; action?: { label: string; run: () => void } },
+  previewOpen: false,
   confirm: null as null | { title: string; body: string; okLabel: string; danger: boolean; resolve: (ok: boolean) => void },
   now: Date.now(),
 });
+
+export interface PreviewInfo { cap: string; port: number; chat_id: number; exp: number; url: string }
+export interface PortInfo { port: number; command: string; cwd: string; kind: 'mine' | 'dev' | 'other' }
+export const previews = $state({ list: [] as PreviewInfo[], ports: [] as PortInfo[], loading: false });
 
 export const diff = $state({
   chatId: null as number | null,
@@ -57,10 +64,10 @@ export function modelLabel(agent: string, model: string | null): string {
 }
 
 let toastTimer: number | undefined;
-export function notify(text: string, kind: 'error' | 'info' = 'error') {
-  app.toast = { text, kind };
+export function notify(text: string, kind: 'error' | 'info' = 'error', action?: { label: string; run: () => void }) {
+  app.toast = { text, kind, action };
   window.clearTimeout(toastTimer);
-  toastTimer = window.setTimeout(() => (app.toast = null), kind === 'error' ? 7000 : 2500);
+  toastTimer = window.setTimeout(() => (app.toast = null), action ? 15000 : kind === 'error' ? 7000 : 2500);
 }
 
 function fail(e: unknown) {
@@ -75,6 +82,7 @@ export function ask(title: string, body: string, okLabel = 'OK', danger = false)
 
 // -- loading -----------------------------------------------------------------
 
+const PAGE = 60;
 const loading = new Set<number>();
 const buffered = new Map<number, ServerEvent[]>();
 
@@ -88,9 +96,11 @@ export async function loadChat(id: number) {
   loading.add(id);
   buffered.set(id, []);
   try {
-    const data = await api.get<{ chat: Chat; messages: Message[] }>(`/api/chats/${id}`);
+    // A page, not the whole history: imported sessions can hold thousands of messages.
+    const data = await api.get<{ chat: Chat; messages: Message[]; has_more: boolean }>(`/api/chats/${id}?limit=${PAGE}`);
     upsertChat(data.chat);
     app.messages[id] = data.messages;
+    app.hasMore[id] = data.has_more;
   } catch (e) {
     fail(e);
   } finally {
@@ -102,11 +112,24 @@ export async function loadChat(id: number) {
   }
 }
 
+export async function loadEarlier(id: number) {
+  const first = app.messages[id]?.[0];
+  if (!first) return;
+  try {
+    const data = await api.get<{ messages: Message[]; has_more: boolean }>(`/api/chats/${id}?limit=${PAGE}&before=${first.id}`);
+    app.messages[id] = [...data.messages, ...(app.messages[id] ?? [])];
+    app.hasMore[id] = data.has_more;
+  } catch (e) {
+    fail(e);
+  }
+}
+
 async function bootstrap() {
   const data = await api.get<{ catalog: { agents: AgentSpec[] }; projects: Project[]; chats: Chat[] }>('/api/bootstrap');
   app.agents = data.catalog.agents;
   app.projects = data.projects;
   app.chats = data.chats;
+  void api.get<{ previews: PreviewInfo[] }>('/api/previews').then((r) => (previews.list = r.previews), () => {});
   const remembered = Number(store.get('agent8s-selected'));
   const target = app.chats.find((c) => c.id === (app.selectedId ?? remembered)) ?? sorted()[0];
   const showList = !app.ready || app.selectedId === null;
@@ -212,6 +235,18 @@ function apply(ev: ServerEvent) {
       const msg = app.messages[ev.chat_id]?.find((m) => m.id === ev.msg_id);
       if (msg) msg.status = ev.status;
       if (ev.chat_id !== app.selectedId) app.unread[ev.chat_id] = true;
+      break;
+    }
+    case 'preview': {
+      previews.list = previews.list.filter((p) => p.cap !== ev.cap);
+      if (ev.op === 'add' && ev.url) {
+        const info: PreviewInfo = { cap: ev.cap, port: ev.port, chat_id: ev.chat_id, exp: ev.exp, url: ev.url };
+        previews.list.push(info);
+        // A site the agent just exposed: offer to open it, wherever you are looking.
+        if (!app.previewOpen) {
+          notify(`Превью сайта (порт ${ev.port}) готово`, 'info', { label: 'Открыть', run: () => openPreview(info.url) });
+        }
+      }
       break;
     }
     case 'diff_changed':
@@ -455,6 +490,95 @@ export async function disablePhone() {
     remote.url = '';
     remote.svg = '';
     await refreshRemote();
+  } catch (e) {
+    fail(e);
+  }
+}
+
+// -- import from Claude Code (desktop only) -------------------------------------------
+
+export interface ImportableSession {
+  id: string;
+  title: string;
+  cwd: string;
+  branch: string;
+  mtime: number;
+  size: number;
+  imported: boolean;
+  importable: boolean;
+  reason: string;
+}
+
+export const imports = $state({ sessions: [] as ImportableSession[], loading: false, busy: false });
+
+export async function loadImportList() {
+  imports.loading = true;
+  try {
+    imports.sessions = (await api.get<{ sessions: ImportableSession[] }>('/api/import/claude')).sessions;
+  } catch (e) {
+    fail(e);
+  } finally {
+    imports.loading = false;
+  }
+}
+
+export async function importSessions(ids: string[]) {
+  imports.busy = true;
+  try {
+    const { results } = await api.post<{ results: { ok: boolean; error?: string }[] }>('/api/import/claude', { ids });
+    const done = results.filter((r) => r.ok).length;
+    const failed = results.filter((r) => !r.ok);
+    notify(
+      failed.length ? `Импортировано: ${done}, не удалось: ${failed.length} (${failed[0].error})` : `Импортировано чатов: ${done}`,
+      failed.length ? 'error' : 'info',
+    );
+    // New chats and possibly new projects: reload the sidebar's data.
+    const data = await api.get<{ projects: Project[]; chats: Chat[] }>('/api/bootstrap');
+    app.projects = data.projects;
+    app.chats = data.chats;
+    await loadImportList();
+  } catch (e) {
+    fail(e);
+  } finally {
+    imports.busy = false;
+  }
+}
+
+// -- previews: open a site running on the Mac's localhost -------------------------------
+
+export function openPreview(url: string) {
+  if (relayMode) window.open(url, '_blank', 'noopener');
+  else openExternal(url);
+}
+
+export async function loadPorts(chatId: number) {
+  previews.loading = true;
+  try {
+    const r = await api.get<{ ports: PortInfo[]; previews: PreviewInfo[] }>(`/api/chats/${chatId}/ports`);
+    previews.ports = r.ports;
+    previews.list = [...previews.list.filter((p) => p.chat_id !== chatId), ...r.previews];
+  } catch (e) {
+    fail(e);
+  } finally {
+    previews.loading = false;
+  }
+}
+
+export async function sharePort(chatId: number, port: number): Promise<PreviewInfo | null> {
+  try {
+    const info = await api.post<PreviewInfo>(`/api/chats/${chatId}/preview`, { port });
+    previews.list = [...previews.list.filter((p) => p.cap !== info.cap), info];
+    return info;
+  } catch (e) {
+    fail(e);
+    return null;
+  }
+}
+
+export async function stopPreview(cap: string) {
+  try {
+    await api.del(`/api/previews/${cap}`);
+    previews.list = previews.list.filter((p) => p.cap !== cap);
   } catch (e) {
     fail(e);
   }

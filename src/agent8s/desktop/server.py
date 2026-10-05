@@ -16,6 +16,7 @@ from aiohttp import WSMsgType, web
 
 from ..config import DesktopConfig
 from ..db import Database
+from . import ports as portscan, service
 from .remote import RemoteManager
 from .runner import Busy, Hub, Orchestrator, UserError
 
@@ -201,7 +202,27 @@ def create_app(config: DesktopConfig, db: Database, orch: Orchestrator, hub: Hub
 
     @routes.get("/api/chats/{chat_id}")
     async def get_chat(request: web.Request) -> web.Response:
-        return web.json_response(orch.get_chat_with_messages(_chat_id(request)))
+        def number(name: str) -> int | None:
+            raw = request.query.get(name)
+            if raw is None:
+                return None
+            if not raw.isdigit():
+                raise UserError(f"Параметр {name} должен быть числом.")
+            return int(raw)
+
+        return web.json_response(orch.get_chat_with_messages(_chat_id(request), number("limit"), number("before")))
+
+    @routes.get("/api/import/claude")
+    async def claude_sessions(request: web.Request) -> web.Response:
+        return web.json_response({"sessions": await asyncio.to_thread(orch.claude_sessions)})
+
+    @routes.post("/api/import/claude")
+    async def import_claude(request: web.Request) -> web.Response:
+        data = await _body(request)
+        ids = data.get("ids")
+        if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids) or len(ids) > 100:
+            raise UserError("Нужен список ids (до 100 сессий).")
+        return web.json_response({"results": await orch.import_claude(ids)})
 
     @routes.patch("/api/chats/{chat_id}")
     async def patch_chat(request: web.Request) -> web.Response:
@@ -249,7 +270,7 @@ def create_app(config: DesktopConfig, db: Database, orch: Orchestrator, hub: Hub
     @routes.post("/api/chats/{chat_id}/open")
     async def open_chat_dir(request: web.Request) -> web.Response:
         data = await _body(request)
-        chat = orch.get_chat_with_messages(_chat_id(request))["chat"]
+        chat = orch.get_chat(_chat_id(request))
         _open_in(_str(data, "target", "finder") or "finder", chat["worktree_path"])
         return web.json_response({"ok": True})
 
@@ -269,6 +290,36 @@ def create_app(config: DesktopConfig, db: Database, orch: Orchestrator, hub: Hub
             if url is None:
                 raise UserError("Телефон ещё не подключён.")
             return web.json_response({"url": url, "svg": await asyncio.to_thread(qr_svg, url)})
+
+        @routes.get("/api/chats/{chat_id}/ports")
+        async def chat_ports(request: web.Request) -> web.Response:
+            chat = orch.get_chat(_chat_id(request))
+            # Never offer agent8s's own ports (this server, and the background service's).
+            found = await asyncio.to_thread(portscan.listening_ports, {port, service.PORT})
+            order = {"mine": 0, "dev": 1, "other": 2}
+            rows = [
+                {"port": p.port, "command": p.command, "cwd": p.cwd, "kind": portscan.classify(p, chat["worktree_path"])}
+                for p in found
+            ]
+            rows.sort(key=lambda r: (order[r["kind"]], r["port"]))
+            return web.json_response({"ports": rows, "previews": remote.list_previews(chat["id"])})
+
+        @routes.post("/api/chats/{chat_id}/preview")
+        async def create_preview(request: web.Request) -> web.Response:
+            chat = orch.get_chat(_chat_id(request))
+            data = await _body(request)
+            number = data.get("port")
+            if not isinstance(number, int) or isinstance(number, bool):
+                raise UserError("Нужен номер порта.")
+            return web.json_response(remote.create_preview(chat["id"], number), status=201)
+
+        @routes.get("/api/previews")
+        async def list_previews(request: web.Request) -> web.Response:
+            return web.json_response({"previews": remote.list_previews()})
+
+        @routes.delete("/api/previews/{cap}")
+        async def delete_preview(request: web.Request) -> web.Response:
+            return web.json_response({"ok": remote.previews.remove(request.match_info["cap"])})
 
         @routes.delete("/api/remote")
         async def remote_disable(request: web.Request) -> web.Response:

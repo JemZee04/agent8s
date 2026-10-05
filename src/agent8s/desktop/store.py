@@ -112,8 +112,9 @@ class Store:
         agent: str,
         model: str = "",
         effort: str = "",
+        created_at: Optional[str] = None,
     ) -> Chat:
-        stamp = now()
+        stamp = created_at or now()
         with self._connect() as conn:
             cur = conn.execute(
                 """INSERT INTO chats (project_id, title, mode, branch, worktree_path, agent, model, effort,
@@ -186,15 +187,17 @@ class Store:
         agent: Optional[str] = None,
         model: Optional[str] = None,
         status: str = "done",
+        created_at: Optional[str] = None,
     ) -> Message:
+        stamp = created_at or now()
         with self._connect() as conn:
             cur = conn.execute(
                 """INSERT INTO messages (chat_id, role, agent, model, parts, status, created_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (chat_id, role, agent, model, json.dumps(parts), status, now()),
+                (chat_id, role, agent, model, json.dumps(parts), status, stamp),
             )
             message_id = cur.lastrowid
-            conn.execute("UPDATE chats SET updated_at = ? WHERE id = ?", (now(), chat_id))
+            conn.execute("UPDATE chats SET updated_at = ? WHERE id = ?", (stamp, chat_id))
         return self.get_message(message_id)  # type: ignore[return-value]
 
     def get_message(self, message_id: int) -> Optional[Message]:
@@ -211,10 +214,35 @@ class Store:
             if status is not None:
                 conn.execute("UPDATE messages SET status = ? WHERE id = ?", (status, message_id))
 
-    def list_messages(self, chat_id: int) -> list[Message]:
+    def list_messages(self, chat_id: int, limit: Optional[int] = None, before: Optional[int] = None) -> tuple[list[Message], bool]:
+        """Messages in ascending order. With `limit`, the newest `limit` messages older than
+        `before`; the flag says whether older ones remain."""
         with self._connect() as conn:
-            rows = conn.execute("SELECT * FROM messages WHERE chat_id = ? ORDER BY id", (chat_id,)).fetchall()
-        return [_row_to_message(r) for r in rows]
+            if limit is None:
+                rows = conn.execute("SELECT * FROM messages WHERE chat_id = ? ORDER BY id", (chat_id,)).fetchall()
+                return [_row_to_message(r) for r in rows], False
+            rows = conn.execute(
+                "SELECT * FROM messages WHERE chat_id = ? AND id < ? ORDER BY id DESC LIMIT ?",
+                (chat_id, before if before is not None else 2**62, limit + 1),
+            ).fetchall()
+        more = len(rows) > limit
+        return [_row_to_message(r) for r in reversed(rows[:limit])], more
+
+    def add_messages_bulk(self, chat_id: int, rows: list[tuple[str, Optional[str], Optional[str], list[dict[str, Any]], str, Optional[str]]]) -> int:
+        """Insert (role, agent, model, parts, status, created_at) rows in one transaction; returns the last id."""
+        stamp_now = now()
+        last = 0
+        with self._connect() as conn:
+            for role, agent, model, parts, status, created_at in rows:
+                cur = conn.execute(
+                    """INSERT INTO messages (chat_id, role, agent, model, parts, status, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (chat_id, role, agent, model, json.dumps(parts), status, created_at or stamp_now),
+                )
+                last = cur.lastrowid
+            if rows:
+                conn.execute("UPDATE chats SET updated_at = ? WHERE id = ?", (rows[-1][5] or stamp_now, chat_id))
+        return last
 
     def messages_between(self, chat_id: int, after_id: int, before_id: int) -> list[Message]:
         with self._connect() as conn:
