@@ -213,6 +213,10 @@ def create_app(config: DesktopConfig, db: Database, orch: Orchestrator, hub: Hub
 
         return web.json_response(orch.get_chat_with_messages(_chat_id(request), number("limit"), number("before")))
 
+    @routes.post("/api/chats/{chat_id}/sync")
+    async def sync_chat(request: web.Request) -> web.Response:
+        return web.json_response(await orch.sync_claude(_chat_id(request)))
+
     @routes.get("/api/import/claude")
     async def claude_sessions(request: web.Request) -> web.Response:
         return web.json_response({"sessions": await asyncio.to_thread(orch.claude_sessions)})
@@ -397,6 +401,10 @@ def create_app(config: DesktopConfig, db: Database, orch: Orchestrator, hub: Hub
             return web.Response(text=NO_UI_PAGE, content_type="text/html", headers=headers)
         return web.Response(body=page.read_bytes(), content_type="text/html", headers=headers)
 
+    async def calibrate(_: web.Application) -> None:
+        asyncio.create_task(asyncio.to_thread(orch.calibrate_claude_offsets))
+
+    app.on_startup.append(calibrate)
     app.add_routes(routes)
     if (WEB_DIR / "assets").is_dir():
         app.router.add_static("/assets", WEB_DIR / "assets", append_version=False)

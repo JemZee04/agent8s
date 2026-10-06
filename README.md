@@ -239,6 +239,24 @@ project the file belongs to, and not at all for a file outside every project —
 own links expect (the dialog shows which folder is shared). Folder URLs, `/docs/intro` → `intro.html` and
 `intro/index.html` behave like a static host, and anything a page asked for but did not get is listed in the dialog. Same link lifetime, relay trust and second hostname as the site previews below.
 
+### Keep an imported chat up to date
+
+If you carry on in the terminal after importing, the chat here falls behind. The chat header has **↻ Update from Claude**
+(on the phone too): it reads what was added to the session file since the chat last looked and appends exactly that. The
+button turns blue ("there is news in Claude") and the chat gets a ring in the sidebar when the session has moved on
+(checked every 30 s). Details that matter:
+
+- A turn that Claude is still writing in the terminal is left for the next refresh (the button then says "Claude is still
+  answering"), so a long answer arrives whole instead of cut in two.
+- Before every Claude turn started *from the app* the chat is updated automatically, so what happened in the session
+  meanwhile is already above your new message, not below it.
+- Turns made in the app are in the session file too (`--resume` writes them there); the chat remembers how far into the file
+  it is accounted for, so they are not imported a second time. For chats imported by an earlier version this position is
+  worked out once at start-up (or, if they already contain turns made here, at the first refresh, by matching prompts).
+- If Codex spoke in a chat in between, Claude is still told about that turn on its next reply: a refresh only marks as "seen"
+  what Claude wrote itself.
+- The session files are only read.
+
 ### Open a site the agent runs on `localhost` on the phone
 
 Ask the agent to "run the site on localhost", then open **🌐 Preview** in the chat (desktop or phone): it lists what

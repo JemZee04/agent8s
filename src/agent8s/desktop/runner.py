@@ -85,6 +85,24 @@ def apply_event(parts: list[dict[str, Any]], event: dict[str, Any]) -> list[dict
     return []
 
 
+def _without_turns_made_here(new: list[importer.ParsedMessage], made_here: list[str]) -> list[importer.ParsedMessage]:
+    """Drop file turns whose prompt was typed in this app (they are already in the chat)."""
+    pending = list(made_here)
+    kept: list[importer.ParsedMessage] = []
+    skipping = False
+    for message in new:
+        if message.role == "user":
+            text = message.parts[0].get("text")
+            skipping = text in pending
+            if skipping:
+                pending.remove(text)
+                continue
+        elif skipping:
+            continue
+        kept.append(message)
+    return kept
+
+
 # -- pub/sub ------------------------------------------------------------------
 
 
@@ -139,6 +157,7 @@ class Orchestrator:
         self._store = store
         self._hub = hub
         self._live: dict[int, LiveTurn] = {}
+        self._session_files: dict[str, Path] = {}
         self._drivers = {
             "claude": ClaudeDriver(config.claude_allowed_tools, config.claude_permission_mode, config.turn_timeout_seconds),
             "codex": CodexDriver(config.codex_sandbox, config.turn_timeout_seconds),
@@ -152,6 +171,7 @@ class Orchestrator:
         live = self._live.get(chat.id)
         data = asdict(chat)
         data.update(
+            claude_stale=self.claude_stale(chat),
             project_name=project.name if project else "?",
             running=live is not None,
             running_since=live.started_at if live else None,
@@ -162,6 +182,117 @@ class Orchestrator:
 
     def get_chat(self, chat_id: int) -> dict[str, Any]:
         return self.chat_to_dict(self._require_chat(chat_id))
+
+    # -- keeping imported chats in step with the Claude Code session file --
+
+    def _claude_file(self, session_id: str) -> Optional[Path]:
+        path = self._session_files.get(session_id)
+        if path is None or not path.exists():
+            path = importer.find_session_file(session_id)
+            if path is None:
+                return None
+            self._session_files[session_id] = path
+        return path
+
+    def claude_stale(self, chat: Chat) -> bool:
+        """Has the Claude session moved on (e.g. you kept working in the terminal) since this chat last looked?"""
+        session = chat.sessions.get("claude")
+        if not session:
+            return False
+        path = self._claude_file(session["id"])
+        if path is None:
+            return False
+        if session.get("offset") is None:
+            return True  # an old chat that also has turns made here: one careful refresh sorts it out
+        try:
+            return path.stat().st_size > session["offset"]
+        except OSError:
+            return False
+
+    async def sync_claude(self, chat_id: int) -> dict[str, Any]:
+        """Bring the chat up to date with its Claude Code session file; returns {"added": n, "pending": bool}."""
+        chat = self._require_chat(chat_id)
+        if chat_id in self._live:
+            raise Busy()
+        session = chat.sessions.get("claude")
+        if not session:
+            raise UserError("Этот чат не связан с сессией Claude Code.")
+        path = self._claude_file(session["id"])
+        if path is None:
+            raise UserError("Файл сессии Claude Code не найден (возможно, он удалён).")
+        return await self._sync_claude_file(chat, session, path)
+
+    async def _sync_claude_file(self, chat: Chat, session: dict[str, Any], path: Path) -> dict[str, Any]:
+        history, _ = self._store.list_messages(chat.id)
+        last_before = history[-1].id if history else 0
+        # Chats imported before offsets were recorded: the imported messages are those carrying a file
+        # timestamp ("...Z"); messages made in this app are stamped by us ("...+00:00").
+        offset = session.get("offset")
+        made_here: list[str] = []
+        if offset is None:
+            imported = sum(1 for m in history if m.created_at.endswith("Z"))
+            offset = await asyncio.to_thread(importer.legacy_offset, path, imported)
+            made_here = [m.parts[0]["text"] for m in history
+                         if m.role == "user" and not m.created_at.endswith("Z") and m.parts and m.parts[0].get("text")]
+        parsed = await asyncio.to_thread(importer.parse_session, path, offset)
+        new = _without_turns_made_here(parsed.messages, made_here)
+
+        last_id = last_before
+        if new:
+            last_id = self._store.add_messages_bulk(chat.id, [
+                (m.role, "claude" if m.role == "assistant" else None, m.model, m.parts, m.status, m.created_at) for m in new
+            ])
+        # Claude itself wrote these turns, so it has seen them -- unless another agent spoke in between,
+        # in which case it must still be told about that (hence `seen` only moves when nothing is missed).
+        fully_seen = session.get("seen") == last_before
+        seen = last_id if (new and fully_seen) else session.get("seen", last_before)
+        self._store.set_session(chat.id, "claude", session["id"], seen=seen, offset=parsed.end_offset)
+        if parsed.new_title and parsed.new_title != chat.title:
+            self._store.update_chat(chat.id, title=parsed.new_title[:120])
+        fresh = self._require_chat(chat.id)
+        self._hub.publish({"t": "chat", "chat": self.chat_to_dict(fresh)})
+        if new:
+            self._hub.publish({"t": "chat_reload", "chat_id": chat.id})
+        return {"added": len(new), "pending": parsed.pending}
+
+    async def _autosync_before_turn(self, chat: Chat) -> None:
+        """A turn made here resumes the session: what happened in it meanwhile must already be in this chat."""
+        session = chat.sessions.get("claude")
+        if chat.agent != "claude" or not session or not self.claude_stale(chat):
+            return
+        try:
+            path = self._claude_file(session["id"])
+            if path is not None:
+                await self._sync_claude_file(chat, session, path)
+        except Exception:
+            log.exception("could not sync chat %s with its Claude session before a turn", chat.id)
+
+    def _mark_claude_session_read(self, chat_id: int) -> None:
+        """After a turn here, the session file also holds that turn: it is not "new" from outside."""
+        chat = self._store.get_chat(chat_id)
+        session = chat.sessions.get("claude") if chat else None
+        path = self._claude_file(session["id"]) if session else None
+        if path is not None:
+            self._store.set_session(chat_id, "claude", session["id"], seen=session["seen"], offset=importer.end_of_complete_lines(path))
+
+    def calibrate_claude_offsets(self) -> int:
+        """One-time: give chats imported before offsets existed their offset (no messages change)."""
+        done = 0
+        for chat in self._store.list_chats():
+            session = chat.sessions.get("claude")
+            if not session or session.get("offset") is not None:
+                continue
+            path = self._claude_file(session["id"])
+            if path is None:
+                continue
+            history, _ = self._store.list_messages(chat.id)
+            if any(m.role == "user" and not m.created_at.endswith("Z") for m in history):
+                continue  # turns made here are in the file too: only a refresh can tell them apart from news
+            imported = sum(1 for m in history if m.created_at.endswith("Z"))
+            self._store.set_session(chat.id, "claude", session["id"], seen=session["seen"],
+                                    offset=importer.legacy_offset(path, imported))
+            done += 1
+        return done
 
     def known_folders(self) -> list[str]:
         """Every project and chat folder: the places a shared HTML file may reach up to."""
@@ -358,7 +489,7 @@ class Orchestrator:
             (m.role, "claude" if m.role == "assistant" else None, m.model, m.parts, m.status, m.created_at)
             for m in parsed.messages
         ])
-        self._store.set_session(chat.id, "claude", info.id, seen=last_id)
+        self._store.set_session(chat.id, "claude", info.id, seen=last_id, offset=parsed.end_offset)
         fresh = self._require_chat(chat.id)
         self._hub.publish({"t": "chat", "chat": self.chat_to_dict(fresh)})
         return fresh
@@ -428,6 +559,8 @@ class Orchestrator:
         if not Path(chat.worktree_path).is_dir():
             raise UserError(f"Папка чата не найдена: {chat.worktree_path}")
 
+        await self._autosync_before_turn(chat)
+        chat = self._require_chat(chat_id)
         user_msg = self._store.add_message(chat_id, "user", [{"type": "text", "text": text}])
         assistant_msg = self._store.add_message(
             chat_id, "assistant", [], agent=chat.agent, model=chat.model or None, status="running"
@@ -532,6 +665,8 @@ class Orchestrator:
                 self._store.update_chat(chat_id, status=ok_chat_status)
                 live.message["status"] = status
                 self._live.pop(chat_id, None)
+                if agent == "claude":
+                    self._mark_claude_session_read(chat_id)
                 self._hub.publish({"t": "msg_status", "chat_id": chat_id, "msg_id": assistant_msg.id, "status": status})
                 await self._refresh_changes(chat_id)
             except Exception:

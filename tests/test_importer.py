@@ -137,7 +137,7 @@ async def test_import_creates_a_resumable_direct_chat(env):
     assert messages[1].agent == "claude" and messages[1].model == "claude-opus-5"
     assert messages[0].created_at == "2026-01-01T10:00:00Z"  # original dates survive
     # the native session is wired up, so the next claude turn is a real --resume with nothing re-told
-    assert chat.sessions["claude"] == {"id": sid, "seen": messages[-1].id}
+    assert chat.sessions["claude"] == {"id": sid, "seen": messages[-1].id, "offset": path.stat().st_size}
 
     assert orch.claude_sessions()[0]["imported"] is True
     again = await orch.import_claude([sid])
@@ -223,3 +223,196 @@ async def test_other_folders_inside_a_chats_folder_are_found(env, tmp_path):
     chat = store.create_chat(outer.id, "outer chat", "direct", "main", str(repo), "claude")
     store.create_chat(inner.id, "inner chat", "direct", "main", str(inner_dir), "claude")
     assert orch.other_folders_inside(chat.id) == [str(inner_dir.resolve())]
+
+
+# -- bringing a chat up to date with its session file -----------------------------------------------
+
+
+def append(path: Path, lines: list[dict]):
+    with path.open("a") as handle:
+        for line in lines:
+            handle.write(json.dumps(line) + "\n")
+
+
+def turn(cwd, prompt, answer, stamp, *, stop="end_turn"):
+    c = {"cwd": str(cwd), "gitBranch": "main"}
+    return [
+        entry("user", prompt, timestamp=f"{stamp}:00Z", **c),
+        {**entry("assistant", [{"type": "text", "text": answer}], timestamp=f"{stamp}:05Z", **c),
+         "message": {"id": "m" + stamp, "model": "claude-opus-5", "stop_reason": stop, "content": [{"type": "text", "text": answer}]}},
+    ]
+
+
+@pytest.fixture
+def synced(env, monkeypatch):
+    """A chat imported from a session that ended with a finished turn."""
+    import os
+    orch, store, db, repo, root = env
+    path = write_session(root, repo, turn(repo, "первый вопрос", "первый ответ", "2026-02-01T10:00"))
+    os.utime(path, (1, 1))  # an old file: nothing in it can be "still being written"
+    return orch, store, path, repo
+
+
+async def import_it(orch, path):
+    return (await orch.import_claude([path.stem]))[0]["chat_id"]
+
+
+async def test_continuing_in_the_terminal_shows_up_after_a_refresh(synced):
+    orch, store, path, repo = synced
+    chat_id = await import_it(orch, path)
+    assert orch.get_chat(chat_id)["claude_stale"] is False
+
+    append(path, turn(repo, "вопрос из терминала", "ответ из терминала", "2026-02-01T11:00"))
+    assert orch.get_chat(chat_id)["claude_stale"] is True  # the button can say "there is news"
+
+    assert await orch.sync_claude(chat_id) == {"added": 2, "pending": False}
+    texts = [m.parts[0]["text"] for m in store.list_messages(chat_id)[0]]
+    assert texts == ["первый вопрос", "первый ответ", "вопрос из терминала", "ответ из терминала"]
+    assert orch.get_chat(chat_id)["claude_stale"] is False
+    assert await orch.sync_claude(chat_id) == {"added": 0, "pending": False}  # nothing twice
+    assert len(store.list_messages(chat_id)[0]) == 4
+
+
+async def test_a_turn_still_being_written_arrives_whole_later(synced):
+    orch, store, path, repo = synced
+    chat_id = await import_it(orch, path)
+    append(path, turn(repo, "длинная задача", "промежуточный шаг", "2026-02-01T12:00", stop="tool_use"))  # not finished
+    # the file is fresh, so the turn is taken as running: leave it for later instead of cutting it in two
+    assert await orch.sync_claude(chat_id) == {"added": 0, "pending": True}
+    append(path, [turn(repo, "x", "готово", "2026-02-01T12:09")[1]])  # the final answer lands
+    assert await orch.sync_claude(chat_id) == {"added": 2, "pending": False}
+    messages = store.list_messages(chat_id)[0]
+    assert messages[-2].parts[0]["text"] == "длинная задача"
+    assert [p["text"] for p in messages[-1].parts if p["type"] == "text"] == ["промежуточный шаг\n\nготово"]
+
+
+async def test_a_session_that_was_merely_interrupted_is_not_held_back_forever(synced):
+    import os
+    orch, store, path, repo = synced
+    chat_id = await import_it(orch, path)
+    append(path, turn(repo, "оборвалось", "половина ответа", "2026-02-01T13:00", stop=None))
+    os.utime(path, (1, 1))  # untouched for ages: nobody is writing it any more
+    assert await orch.sync_claude(chat_id) == {"added": 2, "pending": False}
+
+
+async def test_a_turn_made_in_the_app_is_not_imported_back_as_a_duplicate(synced):
+    orch, store, path, repo = synced
+    chat_id = await import_it(orch, path)
+
+    class FileWritingDriver:  # like claude --resume: answers, and the session file grows
+        async def run(self, req):
+            append(path, turn(repo, "из приложения", "ответ приложению", "2026-02-01T14:00"))
+            yield {"type": "session", "id": path.stem}
+            yield {"type": "text", "text": "ответ приложению"}
+            yield {"type": "done", "ok": True, "error": None}
+
+    orch._drivers = {"claude": FileWritingDriver()}
+    await orch.send(chat_id, "из приложения")
+    await orch._live[chat_id].task if chat_id in orch._live else None
+    assert orch.get_chat(chat_id)["claude_stale"] is False  # the file grew, but we wrote that ourselves
+    assert await orch.sync_claude(chat_id) == {"added": 0, "pending": False}
+    users = [m.parts[0]["text"] for m in store.list_messages(chat_id)[0] if m.role == "user"]
+    assert users == ["первый вопрос", "из приложения"]
+
+
+async def test_terminal_work_is_pulled_in_before_the_next_turn_so_order_stays_right(synced):
+    orch, store, path, repo = synced
+    chat_id = await import_it(orch, path)
+    append(path, turn(repo, "пока вы были в терминале", "терминальный ответ", "2026-02-01T15:00"))
+
+    class QuietDriver:
+        async def run(self, req):
+            yield {"type": "session", "id": path.stem}
+            yield {"type": "done", "ok": True, "error": None}
+
+    orch._drivers = {"claude": QuietDriver()}
+    await orch.send(chat_id, "а теперь из приложения")
+    await orch._live[chat_id].task if chat_id in orch._live else None
+    users = [m.parts[0]["text"] for m in store.list_messages(chat_id)[0] if m.role == "user"]
+    assert users == ["первый вопрос", "пока вы были в терминале", "а теперь из приложения"]  # not the other way round
+
+
+async def test_another_agents_turn_is_still_told_to_claude_after_a_refresh(synced):
+    orch, store, path, repo = synced
+    chat_id = await import_it(orch, path)
+    codex_msg = store.add_message(chat_id, "user", [{"type": "text", "text": "вопрос codex"}])
+    codex_answer = store.add_message(chat_id, "assistant", [{"type": "text", "text": "ответ codex"}], agent="codex")
+    append(path, turn(repo, "из терминала", "ответ claude", "2026-02-01T16:00"))
+    await orch.sync_claude(chat_id)
+    # claude never saw the codex turn, so its `seen` marker must not jump over it
+    assert store.get_chat(chat_id).sessions["claude"]["seen"] < codex_msg.id
+
+
+async def test_legacy_chats_get_their_offset_and_an_app_turn_is_not_duplicated(env):
+    import os
+    orch, store, db, repo, root = env
+    path = write_session(root, repo, turn(repo, "импортировано", "ответ", "2026-03-01T10:00"))
+    os.utime(path, (1, 1))
+    chat_id = await import_it(orch, path)
+    # simulate a chat from before offsets existed, with one turn made in the app (stamped by us)
+    session = store.get_chat(chat_id).sessions["claude"]
+    store.set_session(chat_id, "claude", session["id"], seen=session["seen"])
+    with store._connect() as conn:
+        conn.execute("UPDATE chats SET sessions = ? WHERE id = ?", (json.dumps({"claude": {"id": session["id"], "seen": session["seen"]}}), chat_id))
+    store.add_message(chat_id, "user", [{"type": "text", "text": "из приложения"}])
+    store.add_message(chat_id, "assistant", [{"type": "text", "text": "ответ приложению"}], agent="claude")
+    append(path, turn(repo, "из приложения", "ответ приложению", "2026-03-01T11:00"))  # what claude --resume wrote
+    append(path, turn(repo, "потом в терминале", "терминальный ответ", "2026-03-01T12:00"))
+
+    assert orch.calibrate_claude_offsets() == 0  # turns made here are in the file too: left for the careful path
+    assert "offset" not in store.get_chat(chat_id).sessions["claude"]
+    assert orch.get_chat(chat_id)["claude_stale"] is True  # so the button invites one refresh
+    assert await orch.sync_claude(chat_id) == {"added": 2, "pending": False}  # only the terminal turn is new
+    assert "offset" in store.get_chat(chat_id).sessions["claude"] and orch.get_chat(chat_id)["claude_stale"] is False
+    users = [m.parts[0]["text"] for m in store.list_messages(chat_id)[0] if m.role == "user"]
+    assert users == ["импортировано", "из приложения", "потом в терминале"]
+
+
+async def test_a_legacy_chat_without_app_turns_is_calibrated_silently(env):
+    import os
+    orch, store, db, repo, root = env
+    path = write_session(root, repo, turn(repo, "q", "a", "2026-03-02T10:00") + [{"type": "ai-title", "aiTitle": "t", "sessionId": "S"}])
+    os.utime(path, (1, 1))
+    chat_id = await import_it(orch, path)
+    session = store.get_chat(chat_id).sessions["claude"]
+    with store._connect() as conn:
+        conn.execute("UPDATE chats SET sessions = ? WHERE id = ?", (json.dumps({"claude": {"id": session["id"], "seen": session["seen"]}}), chat_id))
+    assert orch.calibrate_claude_offsets() == 1
+    assert orch.get_chat(chat_id)["claude_stale"] is False  # trailing bookkeeping lines do not count as news
+    assert await orch.sync_claude(chat_id) == {"added": 0, "pending": False}
+
+
+async def test_refresh_refuses_chats_that_are_not_from_claude_or_are_busy(env):
+    orch, store, db, repo, root = env
+    project = orch.add_project("p", str(repo))
+    plain = store.create_chat(project.id, "plain", "direct", "main", str(repo), "codex")
+    with pytest.raises(UserError, match="не связан"):
+        await orch.sync_claude(plain.id)
+    assert orch.get_chat(plain.id)["claude_stale"] is False
+
+
+async def test_a_long_final_answer_is_not_re_imported_for_a_legacy_chat(env):
+    """Regression (found on real data): the last answer *starts* long before it ends; a timestamp
+    boundary would cut it in two and add its tail as an extra message."""
+    import os
+    orch, store, db, repo, root = env
+    c = {"cwd": str(repo), "gitBranch": "main"}
+    lines = [
+        entry("user", "долгая задача", timestamp="2026-04-01T10:00:00Z", **c),
+        entry("assistant", [{"type": "text", "text": "начинаю"}], timestamp="2026-04-01T10:00:05Z", **c),
+        entry("assistant", [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "make"}}], timestamp="2026-04-01T10:02:00Z", **c),
+        entry("user", [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}], timestamp="2026-04-01T10:09:00Z", **c),
+        {**entry("assistant", [{"type": "text", "text": "готово"}], timestamp="2026-04-01T10:09:30Z", **c),
+         "message": {"id": "m9", "stop_reason": "end_turn", "content": [{"type": "text", "text": "готово"}]}},
+    ]
+    path = write_session(root, repo, lines)
+    os.utime(path, (1, 1))
+    chat_id = await import_it(orch, path)
+    session = store.get_chat(chat_id).sessions["claude"]
+    with store._connect() as conn:  # as if imported by the version that recorded no offset
+        conn.execute("UPDATE chats SET sessions = ? WHERE id = ?", (json.dumps({"claude": {"id": session["id"], "seen": session["seen"]}}), chat_id))
+    before = len(store.list_messages(chat_id)[0])
+    assert orch.calibrate_claude_offsets() == 1
+    assert orch.get_chat(chat_id)["claude_stale"] is False
+    assert await orch.sync_claude(chat_id) == {"added": 0, "pending": False}
+    assert len(store.list_messages(chat_id)[0]) == before

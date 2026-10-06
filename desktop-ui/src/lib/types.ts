@@ -33,6 +33,7 @@ export interface Chat {
   running_since: number | null;
   default_branch: string;
   sessions: string[];
+  claude_stale: boolean;
   extra_dirs: string[];
   created_at: string;
   updated_at: string;
@@ -53,4 +54,5 @@ export type ServerEvent =
   | { t: 'msg_ops'; chat_id: number; msg_id: number; rev: number; ops: Op[] }
   | { t: 'msg_status'; chat_id: number; msg_id: number; status: Message['status'] }
   | { t: 'diff_changed'; chat_id: number }
+  | { t: 'chat_reload'; chat_id: number }
   | { t: 'preview'; op: 'add' | 'del' | 'update'; cap: string; port: number; chat_id: number; exp: number; kind: 'port' | 'file'; name: string; url?: string; desktop?: boolean };

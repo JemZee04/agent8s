@@ -25,7 +25,8 @@
             <span class="state">
               {#if c.running}<i class="spinner"></i>
               {:else if c.status === 'error'}<i class="dot err" title="Последний ход завершился ошибкой"></i>
-              {:else if app.unread[c.id]}<i class="dot unread" title="Есть новый ответ"></i>{/if}
+              {:else if app.unread[c.id]}<i class="dot unread" title="Есть новый ответ"></i>
+              {:else if c.claude_stale}<i class="dot stale" title="В сессии Claude Code есть новое — откройте чат и нажмите «Обновить»"></i>{/if}
             </span>
             <span class="title">{c.title}</span>
             {#if c.changes}<span class="chg" title="Изменённых файлов">{c.changes}</span>{/if}
@@ -77,6 +78,7 @@
   .dot { width: 8px; height: 8px; border-radius: 50%; display: block; }
   .dot.err { background: var(--err); }
   .dot.unread { background: var(--accent); }
+  .dot.stale { box-shadow: inset 0 0 0 2px var(--accent); }
   .count { background: var(--accent); color: var(--accent-text); font-size: 11px; border-radius: 9px; padding: 0 6px; margin-left: 4px; }
   .chg { font-size: 11px; color: var(--text-dim); background: var(--bg-active); border-radius: 9px; padding: 0 6px; }
   .ag { font-size: 10.5px; font-weight: 600; color: var(--text-faint); }

@@ -2,7 +2,8 @@
   import { onMount, tick } from 'svelte';
   import { native } from './lib/api';
   import {
-    addWritableDir, app, deleteChat, loadEarlier, notify, openFolder, patchChat, previews, selectedChat, toggleDiff,
+    addWritableDir, app, deleteChat, loadEarlier, notify, openFolder, patchChat, previews, selectedChat, syncFromClaude,
+    toggleDiff,
   } from './lib/state.svelte';
   import Composer from './Composer.svelte';
   import MessageView from './MessageView.svelte';
@@ -115,6 +116,12 @@
           {shortPath(chat.worktree_path)}
         </button>
         {#if !app.relayMode}<button class="chip click" onclick={() => openFolder('finder')}>Открыть папку</button>{/if}
+        {#if chat.sessions.includes('claude') && !chat.running}
+          <button class="chip click refresh" class:stale={chat.claude_stale} disabled={app.syncing[chat.id]}
+            onclick={() => syncFromClaude(chat)} title="Подтянуть из сессии Claude Code то, что вы делали в терминале">
+            {app.syncing[chat.id] ? '↻ Обновляю…' : chat.claude_stale ? '↻ Есть новое в Claude — обновить' : '↻ Обновить из Claude'}
+          </button>
+        {/if}
         <button class="chip click" onclick={() => (app.previewOpen = true)} title="Открыть на телефоне сайт, запущенный на localhost">
           🌐 Превью{#if previews.list.some((p) => p.chat_id === chat.id)} · {previews.list.filter((p) => p.chat_id === chat.id).length}{/if}
         </button>
@@ -170,6 +177,8 @@
   .menu hr { border: 0; border-top: 1px solid var(--border); margin: 4px 2px; }
   .row2 { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; }
   .chip { font-size: 12px; color: var(--text-dim); background: var(--bg-side); border: 0; border-radius: 6px; padding: 1px 8px; max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chip.stale { background: var(--accent-soft); color: var(--accent); }
+  .chip:disabled { opacity: 0.6; }
   .chip.click:hover { background: var(--bg-active); color: var(--text); }
   .path { font-family: var(--mono); font-size: 11.5px; }
   .scroller { flex: 1; overflow-y: auto; min-height: 0; }

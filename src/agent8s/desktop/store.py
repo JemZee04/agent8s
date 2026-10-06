@@ -148,11 +148,17 @@ class Store:
                 (*fields.values(), now(), chat_id),
             )
 
-    def set_session(self, chat_id: int, agent: str, session_id: str, seen: int) -> None:
+    def set_session(self, chat_id: int, agent: str, session_id: str, seen: int, offset: Optional[int] = None) -> None:
         chat = self.get_chat(chat_id)
         if chat is None:
             return
-        sessions = {**chat.sessions, agent: {"id": session_id, "seen": seen}}
+        previous = chat.sessions.get(agent, {})
+        entry: dict[str, Any] = {"id": session_id, "seen": seen}
+        # `offset`: how far into the agent's own session file this chat is accounted for (see importer.py).
+        kept = offset if offset is not None else (previous.get("offset") if previous.get("id") == session_id else None)
+        if kept is not None:
+            entry["offset"] = kept
+        sessions = {**chat.sessions, agent: entry}
         with self._connect() as conn:
             conn.execute("UPDATE chats SET sessions = ? WHERE id = ?", (json.dumps(sessions), chat_id))
 

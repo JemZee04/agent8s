@@ -14,6 +14,7 @@ export const app = $state({
   phoneDialogOpen: false,
   importOpen: false,
   hasMore: {} as Record<number, boolean>,
+  syncing: {} as Record<number, boolean>,
   freshPairLink: '',
   agents: [] as AgentSpec[],
   projects: [] as Project[],
@@ -256,6 +257,10 @@ function apply(ev: ServerEvent) {
       }
       break;
     }
+    case 'chat_reload':
+      // New turns were pulled in from the Claude session file: show them.
+      if (app.messages[ev.chat_id]) void loadChat(ev.chat_id);
+      break;
     case 'diff_changed':
       if (ev.chat_id === app.selectedId && app.diffOpen) {
         window.clearTimeout(diffTimer);
@@ -273,8 +278,18 @@ function resync() {
   void bootstrap().catch(fail);
 }
 
+// Work done in a terminal sends this app no event, so ask now and then which chats have news.
+async function refreshChats() {
+  if (!app.online || !app.ready || document.visibilityState === 'hidden') return;
+  try {
+    const data = await api.get<{ chats: Chat[] }>('/api/bootstrap');
+    for (const chat of data.chats) upsertChat(chat);
+  } catch { /* the next tick tries again */ }
+}
+
 export function start() {
   window.setInterval(() => (app.now = Date.now()), 1000);
+  window.setInterval(() => void refreshChats(), 30_000);
   if (relayMode) {
     void startRelay();
     return;
@@ -376,6 +391,26 @@ export async function createChat(project_id: number, agent: string, model: strin
   } catch (e) {
     fail(e);
     return null;
+  }
+}
+
+export async function syncFromClaude(chat: Chat) {
+  app.syncing[chat.id] = true;
+  try {
+    const r = await api.post<{ added: number; pending: boolean }>(`/api/chats/${chat.id}/sync`);
+    notify(
+      r.added
+        ? `Добавлено сообщений: ${r.added}`
+        : r.pending
+          ? 'Claude ещё отвечает в терминале — обновите чуть позже'
+          : 'Новых сообщений нет',
+      'info',
+    );
+    if (r.added) await loadChat(chat.id);
+  } catch (e) {
+    fail(e);
+  } finally {
+    delete app.syncing[chat.id];
   }
 }
 

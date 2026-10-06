@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterator, Optional
@@ -17,6 +18,10 @@ from typing import Any, Iterator, Optional
 from .drivers import _stringify, clip
 
 CLAUDE_ROOT = Path.home() / ".claude" / "projects"
+STOP_REASONS = {"end_turn", "stop_sequence", "max_tokens"}
+# A turn without a final stop_reason is "still running" only if the file is being written right now;
+# an old session that was simply interrupted must not lose its last turn.
+ACTIVE_WINDOW_SECONDS = 120
 HEAD_BYTES = 128 * 1024
 TAIL_BYTES = 512 * 1024
 # Imported history is context, not a live log: keep tool output short so a huge
@@ -46,6 +51,7 @@ class ParsedMessage:
     created_at: Optional[str] = None
     model: Optional[str] = None
     status: str = "done"
+    offset: int = 0  # where in the file this message begins
 
 
 @dataclass
@@ -56,6 +62,11 @@ class ParsedSession:
     messages: list[ParsedMessage] = field(default_factory=list)
     first_at: Optional[str] = None
     last_at: Optional[str] = None
+    # Everything before this byte offset is accounted for; the next read starts here. It stops short of
+    # a turn that is still being written, so that turn is imported whole once it is finished.
+    end_offset: int = 0
+    pending: bool = False  # the session is in the middle of a turn
+    new_title: Optional[str] = None  # a title found in the part just read
 
 
 def encode_cwd(cwd: str) -> str:
@@ -72,6 +83,50 @@ def _events(path: Path) -> Iterator[dict[str, Any]]:
                 continue
             if isinstance(event, dict):
                 yield event
+
+
+def _lines_from(path: Path, offset: int) -> Iterator[tuple[int, int, Optional[dict[str, Any]]]]:
+    """(start, end, event) for each *complete* line from `offset`. A line still being written
+    (no newline yet) is not yielded, so offsets always sit on line boundaries."""
+    with path.open("rb") as handle:
+        handle.seek(offset)
+        position = offset
+        for raw in handle:
+            if not raw.endswith(b"\n"):
+                return
+            start, position = position, position + len(raw)
+            try:
+                event = json.loads(raw)
+            except ValueError:
+                event = None
+            yield start, position, event if isinstance(event, dict) else None
+
+
+def find_session_file(session_id: str, root: Optional[Path] = None) -> Optional[Path]:
+    for candidate in (root or CLAUDE_ROOT).glob(f"*/{session_id}.jsonl"):
+        return candidate
+    return None
+
+
+def end_of_complete_lines(path: Path) -> int:
+    """Size of the file up to its last newline (what a finished turn leaves behind)."""
+    size = path.stat().st_size
+    with path.open("rb") as handle:
+        handle.seek(max(0, size - 65536))
+        tail = handle.read()
+    cut = tail.rfind(b"\n")
+    return size - (len(tail) - cut - 1) if cut != -1 else 0
+
+
+def legacy_offset(path: Path, imported_count: int) -> int:
+    """For chats imported before offsets were recorded: where the imported part of the file ends.
+
+    The chat holds the first `imported_count` messages the file yields; the next one starts at the answer.
+    (Positions, not timestamps: a long answer starts at one moment and ends much later.)"""
+    parsed = parse_session(path)
+    if len(parsed.messages) > imported_count:
+        return parsed.messages[imported_count].offset
+    return end_of_complete_lines(path) if len(parsed.messages) < imported_count else parsed.end_offset
 
 
 def clean_prompt(text: str) -> str:
@@ -166,7 +221,8 @@ def _lines(blob: bytes) -> Iterator[dict[str, Any]]:
             yield event
 
 
-def parse_session(path: Path) -> ParsedSession:
+def parse_session(path: Path, start_offset: int = 0) -> ParsedSession:
+    """Fold the events of a session file (from `start_offset`) into chat messages."""
     cwds: list[str] = []
     branch = ""
     custom_title = ai_title = ""
@@ -174,8 +230,15 @@ def parse_session(path: Path) -> ParsedSession:
     turn: Optional[ParsedMessage] = None
     tools: dict[str, dict[str, Any]] = {}
     first_at = last_at = None
+    end_offset = start_offset
+    turn_start: Optional[int] = None  # offset of the line that began the latest turn
+    turn_index = 0  # messages[turn_index:] belong to that turn
+    finished = True  # did the latest turn reach its final answer?
 
-    for event in _events(path):
+    for line_start, line_end, event in _lines_from(path, start_offset):
+        end_offset = line_end
+        if event is None:
+            continue
         kind = event.get("type")
         if kind == "custom-title":
             custom_title = event.get("customTitle") or custom_title
@@ -191,12 +254,13 @@ def parse_session(path: Path) -> ParsedSession:
 
         if kind == "user":
             if event.get("isCompactSummary"):
-                messages.append(ParsedMessage("system", [{"type": "text", "text": "Контекст сессии был сжат (compact)."}], stamp))
+                messages.append(ParsedMessage("system", [{"type": "text", "text": "Контекст сессии был сжат (compact)."}], stamp, offset=line_start))
                 turn = None
                 continue
             prompt = _prompt_text(event)
             if prompt is not None:
-                messages.append(ParsedMessage("user", [{"type": "text", "text": prompt}], stamp))
+                turn_start, turn_index, finished = line_start, len(messages), False
+                messages.append(ParsedMessage("user", [{"type": "text", "text": prompt}], stamp, offset=line_start))
                 turn = None
                 continue
             content = event.get("message", {}).get("content")
@@ -213,12 +277,13 @@ def parse_session(path: Path) -> ParsedSession:
         if not isinstance(content, list):
             continue
         if turn is None:
-            turn = ParsedMessage("assistant", [], stamp, message.get("model") or None)
+            turn = ParsedMessage("assistant", [], stamp, message.get("model") or None, offset=line_start)
             messages.append(turn)
         if message.get("model"):
             turn.model = message["model"]
         if event.get("isAbortedMidStream"):
             turn.status = "interrupted"
+        finished = bool(event.get("isAbortedMidStream")) or message.get("stop_reason") in STOP_REASONS
         for block in content:
             if not isinstance(block, dict):
                 continue
@@ -236,10 +301,18 @@ def parse_session(path: Path) -> ParsedSession:
                 turn.parts.append(part)
             # `thinking` blocks are stored without their text: nothing to show.
 
+    pending = False
+    if not finished and turn_start is not None and time.time() - path.stat().st_mtime < ACTIVE_WINDOW_SECONDS:
+        # The turn is still being written: leave it for the next read so it arrives whole.
+        del messages[turn_index:]
+        end_offset, pending = turn_start, True
+
     messages = [m for m in messages if m.role != "assistant" or m.parts]
     cwd = _launch_cwd(path.parent.name, cwds)
     first_user = next((m.parts[0]["text"] for m in messages if m.role == "user"), "")
+    found_title = custom_title or ai_title or None
     return ParsedSession(
-        title=(custom_title or ai_title or " ".join(first_user.split())[:60] or path.stem)[:120],
+        title=(found_title or " ".join(first_user.split())[:60] or path.stem)[:120],
         cwd=cwd, branch=branch, messages=messages, first_at=first_at, last_at=last_at,
+        end_offset=end_offset, pending=pending, new_title=found_title,
     )

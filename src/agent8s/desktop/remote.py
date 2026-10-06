@@ -50,7 +50,7 @@ EVENT_BATCH_SECONDS = 0.03
 # the Mac) and /api/remote* (a phone must not manage its own pairing).
 ALLOWED_PATH = re.compile(
     r"^/api/(bootstrap|discover|projects|import/claude|previews(/[0-9a-f]{32})?"
-    r"|chats(/\d+(\?(?:limit|before)=\d+(?:&(?:limit|before)=\d+)?|/(send|stop|diff|commit|merge|dirs|ports|preview|html))?)?)$"
+    r"|chats(/\d+(\?(?:limit|before)=\d+(?:&(?:limit|before)=\d+)?|/(send|stop|diff|commit|merge|dirs|ports|preview|html|sync))?)?)$"
 )
 ALLOWED_METHODS = {"GET", "POST", "PATCH", "DELETE"}
 
