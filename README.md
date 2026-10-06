@@ -185,6 +185,19 @@ Needs no Telegram credentials; it shares the database and the project list with 
 Not done yet: importing Codex sessions (Claude Code sessions are covered, see below), LLM-written
 handoff summaries (the transcript is truncated, not summarised), queuing a message while an agent works.
 
+### Install it as an app
+
+```bash
+uv run agent8s-desktop --install-app      # --uninstall-app removes it again
+```
+
+Builds `~/Applications/agent8s.app` (rounded icon, own name in the Dock and menu bar) and sets up the background
+service below. From then on: open **agent8s** from Launchpad or Spotlight, or pin it in the Dock; no terminal. The app
+is only a window on the service: closing it leaves the service (and the phone connection) running, and opening it
+starts the service first if it was stopped. Starting it twice does not open a second window. If it cannot start,
+a dialog says why (details in `~/Library/Application Support/agent8s/logs/`). After updating the code, run
+`--install-app` again; the app and the service get the new version together.
+
 ### Run it in the background (autostart)
 
 ```bash

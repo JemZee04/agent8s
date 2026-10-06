@@ -8,6 +8,7 @@ import json
 import secrets
 import signal
 import socket
+import subprocess
 import sys
 import threading
 import webbrowser
@@ -18,7 +19,7 @@ from aiohttp import web
 from ..config import load_desktop_config
 from ..db import Database
 from ..singleton import AlreadyRunningError, acquire_singleton_lock
-from . import service
+from . import macapp, service
 from .remote import RemoteManager
 from .runner import Hub, Orchestrator
 from .server import create_app
@@ -90,12 +91,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--install-service", action="store_true", help="установить автозапуск при входе в систему (macOS)")
     parser.add_argument("--uninstall-service", action="store_true", help="убрать автозапуск")
     parser.add_argument("--service-status", action="store_true", help="показать состояние автозапуска")
+    parser.add_argument("--install-app", action="store_true", help="установить приложение agent8s.app в ~/Applications (и автозапуск)")
+    parser.add_argument("--uninstall-app", action="store_true", help="удалить приложение agent8s.app")
+    parser.add_argument("--app", action="store_true", help="режим приложения: окно на фоновом сервисе (его запускает agent8s.app)")
     parser.add_argument("--token", default=None, help="фиксированный токен (для dev-сервера Vite)")
     parser.add_argument("--allow-origin", action="append", default=[], help="доп. Origin (dev-сервер Vite)")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 
+    if args.install_app or args.uninstall_app:
+        return macapp.cli(do_install=args.install_app, do_uninstall=args.uninstall_app)
+    if args.app:
+        return _run_app()
     if args.install_service or args.uninstall_service or args.service_status:
         return service.cli(do_install=args.install_service, do_uninstall=args.uninstall_service)
 
@@ -166,6 +174,40 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+def _run_app() -> int:
+    """What the .app launcher runs: make sure the background service is up, then show the window."""
+    try:
+        url = service.ensure_running()
+    except service.ServiceError as exc:
+        log.error("%s", exc)
+        _alert("agent8s не запустился", str(exc))
+        return 1
+    _open_window(url)
+    return 0
+
+
+def _alert(title: str, text: str) -> None:
+    # No terminal in app mode: a failure must be visible somewhere other than a log file.
+    if sys.platform == "darwin":
+        script = f'display alert {json.dumps(title)} message {json.dumps(text)} as critical'
+        subprocess.run(["osascript", "-e", script], capture_output=True)
+
+
+def _mac_identity() -> None:
+    """Show "agent8s" and its icon in the Dock and menu bar instead of "Python" and a rocket."""
+    if sys.platform != "darwin":
+        return
+    try:
+        from AppKit import NSApplication, NSImage
+        from Foundation import NSBundle
+
+        NSBundle.mainBundle().infoDictionary()["CFBundleName"] = "agent8s"
+        icon = NSImage.alloc().initByReferencingFile_(str(macapp.ICON_PNG))
+        NSApplication.sharedApplication().setApplicationIconImage_(icon)
+    except Exception:  # cosmetic only
+        log.debug("could not set the Dock identity", exc_info=True)
+
+
 def _write_private(path, text: str) -> None:
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:
@@ -180,6 +222,7 @@ def _open_window(url: str) -> None:
         webbrowser.open(url)
         threading.Event().wait()
         return
+    _mac_identity()
     width, height = 1320, 860
     try:  # a fixed 860 px is taller than the usable area of a 13" laptop: the bottom bar would be cut off
         screen = webview.screens[0]

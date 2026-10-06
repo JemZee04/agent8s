@@ -97,6 +97,25 @@ def running_service_url() -> Optional[str]:
         return None
 
 
+def ensure_running(timeout: float = 25.0) -> str:
+    """URL of the service, starting it first if needed (the app window calls this)."""
+    url = running_service_url()
+    if url:
+        return url
+    if not plist_path().exists():
+        raise ServiceError("Фоновый сервис не установлен. Выполните: uv run agent8s-desktop --install-app")
+    # It was stopped (a clean stop is not restarted automatically) or never loaded this session.
+    if _launchctl("kickstart", f"{_domain()}/{LABEL}").returncode != 0:
+        _launchctl("bootstrap", _domain(), str(plist_path()))
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        url = running_service_url()
+        if url:
+            return url
+        time.sleep(0.5)
+    raise ServiceError(f"Сервис не запустился. Лог: {LOG_DIR}/service.err.log")
+
+
 def _launchctl(*args: str) -> subprocess.CompletedProcess:
     return subprocess.run(["launchctl", *args], capture_output=True, text=True)
 

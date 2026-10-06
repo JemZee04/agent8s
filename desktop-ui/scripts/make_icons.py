@@ -1,10 +1,11 @@
-"""Generates the PWA icons (pure Python, no dependencies): python3 scripts/make_icons.py"""
+"""Generates the PWA icons and the macOS app icon (pure Python, no dependencies): python3 scripts/make_icons.py"""
 import math
 import struct
 import zlib
 from pathlib import Path
 
 OUT = Path(__file__).resolve().parent.parent / "public"
+APP_ICON = Path(__file__).resolve().parents[2] / "src" / "agent8s" / "desktop" / "assets" / "icon-1024.png"
 SS = 3  # supersampling per axis
 
 
@@ -58,6 +59,54 @@ def render(size: int) -> bytes:
         rows.append(bytes(row))
     return png(size, size, rows)
 
+
+def png_rgba(width: int, height: int, rows: list[bytes]) -> bytes:
+    raw = b"".join(b"\x00" + row for row in rows)
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        body = kind + data
+        return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body))
+
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)) \
+        + chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b"")
+
+
+def render_app_icon(size: int = 1024) -> bytes:
+    """A macOS-style icon: rounded square with transparent margin (the system does not mask it for us)."""
+    ss = 2
+    u = size / 1024
+    top, bottom = (79, 70, 229), (124, 123, 245)
+    rows = []
+    for y in range(size):
+        row = bytearray()
+        for x in range(size):
+            acc = [0.0, 0.0, 0.0, 0.0]
+            for sy in range(ss):
+                for sx in range(ss):
+                    px, py = (x + (sx + 0.5) / ss) / u, (y + (sy + 0.5) / ss) / u
+                    if not rounded_rect(px, py, 100, 100, 924, 924, 185):
+                        continue
+                    t = (px + py - 200) / 1648
+                    colour = tuple(top[i] + (bottom[i] - top[i]) * t for i in range(3))
+                    # the 512-unit bubble drawing, scaled into the 824 px square
+                    qx, qy = (px - 100) / 824 * 512, (py - 100) / 824 * 512
+                    if rounded_rect(qx, qy, 106, 132, 406, 340, 52) or in_triangle(qx, qy, (150, 320), (150, 410), (236, 336)):
+                        colour = (255, 255, 255)
+                        for cx in (196, 256, 316):
+                            if math.hypot(qx - cx, qy - 236) <= 21:
+                                colour = (79, 70, 229)
+                    acc[0] += colour[0]; acc[1] += colour[1]; acc[2] += colour[2]; acc[3] += 1
+            n = acc[3]
+            row.extend((int(acc[0] / n), int(acc[1] / n), int(acc[2] / n), int(255 * n / (ss * ss))) if n else (0, 0, 0, 0))
+        rows.append(bytes(row))
+    return png_rgba(size, size, rows)
+
+
+if __name__ == "__main__" and "--app-icon" in __import__("sys").argv:
+    APP_ICON.parent.mkdir(parents=True, exist_ok=True)
+    APP_ICON.write_bytes(render_app_icon())
+    print("wrote", APP_ICON)
+    raise SystemExit
 
 for name, size in (("apple-touch-icon.png", 180), ("icon-192.png", 192), ("icon-512.png", 512)):
     (OUT / name).write_bytes(render(size))
