@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { agentLabel, app, patchChat, send, stop } from './lib/state.svelte';
+  import { agentLabel, agentLogin, app, notify, patchChat, refreshAuth, send, stop } from './lib/state.svelte';
   import AgentPicker from './AgentPicker.svelte';
   import type { Chat } from './lib/types';
 
@@ -7,6 +7,17 @@
   let el: HTMLTextAreaElement | undefined = $state();
 
   const draft = $derived(app.drafts[chat.id] ?? '');
+  const signedOut = $derived(app.auth[chat.agent]?.ok === false ? app.auth[chat.agent] : null);
+
+  async function copyLogin(command: string) {
+    try {
+      await navigator.clipboard.writeText(command);
+      notify('Команда скопирована', 'info');
+    } catch {
+      notify('Не удалось скопировать');
+    }
+  }
+
   // Only meaningful between turns: during the very first turn the message just
   // sent counts as "history" although there is nothing to hand over yet.
   const handover = $derived(!chat.running && hasHistory && !chat.sessions.includes(chat.agent));
@@ -43,6 +54,21 @@
 </script>
 
 <div class="composer">
+  {#if signedOut}
+    <div class="auth" role="alert">
+      <b>{signedOut.label} не авторизован</b> для фонового сервиса — его вход хранится отдельно от приложения Claude и мог истечь.
+      {#if app.relayMode}
+        Войдите на компьютере: <code>{signedOut.login}</code>.
+      {:else}
+        Нажмите «Войти» (откроется Терминал и браузер) или выполните <code>{signedOut.login}</code>.
+      {/if}
+      <span class="auth-actions">
+        {#if !app.relayMode}<button class="primary" onclick={() => agentLogin(chat.agent)}>Войти…</button>{/if}
+        {#if !app.relayMode}<button class="btn" onclick={() => copyLogin(signedOut.login)}>Скопировать команду</button>{/if}
+        <button class="btn" onclick={() => refreshAuth(true)}>Проверить снова</button>
+      </span>
+    </div>
+  {/if}
   {#if handover}
     <div class="handover">{agentLabel(chat.agent)} ещё не работал в этом чате — получит предыдущую историю и состояние файлов текстом.</div>
   {/if}
@@ -70,6 +96,9 @@
 
 <style>
   .composer { padding: 6px 20px max(12px, env(safe-area-inset-bottom)); min-width: 0; }
+  .auth { background: var(--err-soft); color: var(--text); border: 1px solid color-mix(in srgb, var(--err) 40%, var(--border)); border-radius: 10px; padding: 8px 12px; margin-bottom: 8px; font-size: 12.5px; line-height: 1.5; }
+  .auth code { font: 12px var(--mono); background: var(--bg-code); border-radius: 5px; padding: 0 5px; user-select: text; }
+  .auth-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
   .handover { font-size: 12px; color: var(--text-dim); background: var(--accent-soft); border-radius: 8px; padding: 6px 11px; margin-bottom: 7px; }
   .box { min-width: 0; display: flex; align-items: flex-end; gap: 8px; background: var(--bg-elev); border: 1px solid var(--border); border-radius: 12px; padding: 7px 8px 7px 12px; }
   .box:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }

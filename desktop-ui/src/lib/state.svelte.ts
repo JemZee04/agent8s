@@ -15,6 +15,7 @@ export const app = $state({
   importOpen: false,
   hasMore: {} as Record<number, boolean>,
   syncing: {} as Record<number, boolean>,
+  auth: {} as Record<string, { ok: boolean | null; login: string; label: string }>,
   freshPairLink: '',
   agents: [] as AgentSpec[],
   projects: [] as Project[],
@@ -132,6 +133,7 @@ async function bootstrap() {
   app.projects = data.projects;
   app.chats = data.chats;
   void loadImportList(true);
+  void refreshAuth();
   void api.get<{ previews: PreviewInfo[] }>('/api/previews').then((r) => (previews.list = r.previews), () => {});
   const remembered = Number(store.get('agent8s-selected'));
   const target = app.chats.find((c) => c.id === (app.selectedId ?? remembered)) ?? sorted()[0];
@@ -237,6 +239,7 @@ function apply(ev: ServerEvent) {
     case 'msg_status': {
       const msg = app.messages[ev.chat_id]?.find((m) => m.id === ev.msg_id);
       if (msg) msg.status = ev.status;
+      if (ev.status === 'error') void refreshAuth(true);
       if (ev.chat_id !== app.selectedId) app.unread[ev.chat_id] = true;
       break;
     }
@@ -285,6 +288,23 @@ async function refreshChats() {
     const data = await api.get<{ chats: Chat[] }>('/api/bootstrap');
     for (const chat of data.chats) upsertChat(chat);
   } catch { /* the next tick tries again */ }
+  void refreshAuth();
+}
+
+// Is each agent signed in as the background service sees it? (Its login is separate from your shell's.)
+export async function refreshAuth(fresh = false) {
+  try {
+    app.auth = await api.get(`/api/agents/auth${fresh ? '?refresh=1' : ''}`);
+  } catch { /* an older server without the check: show nothing */ }
+}
+
+export async function agentLogin(agent: string) {
+  try {
+    await api.post(`/api/agents/${agent}/login`);
+    notify('Открыл Терминал: подтвердите вход в браузере, затем нажмите «Проверить снова».', 'info');
+  } catch (e) {
+    fail(e);
+  }
 }
 
 export function start() {

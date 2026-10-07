@@ -11,6 +11,7 @@ from typing import Any, Optional
 from .. import git_ops
 from ..config import DesktopConfig
 from ..db import Database, Project
+from .agent_auth import explain_error
 from .catalog import build_catalog
 from .drivers import ClaudeDriver, CodexDriver, TurnRequest
 from . import importer
@@ -650,6 +651,8 @@ class Orchestrator:
                 self._store.clear_session(chat_id, agent)  # retry once from scratch, with the transcript
             if done is None:
                 done = {"type": "done", "ok": False, "error": "Агент завершился без результата"}
+            if not done.get("ok"):
+                done = {**done, "error": explain_error(agent, done.get("error"))}
             emit(done)
             if not done.get("ok"):
                 status, ok_chat_status = "error", "error"

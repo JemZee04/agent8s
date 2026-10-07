@@ -244,3 +244,14 @@ async def test_restart_reconciliation(env):
     store.update_chat(chat["id"], status="running")
     assert store.reconcile_interrupted() == 1
     assert store.get_message(msg.id).status == "interrupted" and store.get_chat(chat["id"]).status == "idle"
+
+
+async def test_a_sign_in_failure_tells_you_how_to_fix_it(env):
+    orch, store, project, _ = env
+    orch._drivers = {"claude": FakeDriver("claude", [[
+        {"type": "done", "ok": False, "error": "Failed to authenticate: OAuth session expired and could not be refreshed"}]])}
+    chat = await orch.create_chat(project.id, "claude")
+    await orch.send(chat["id"], "привет")
+    await settle(orch, chat["id"])
+    error = orch.get_chat_with_messages(chat["id"])["messages"][-1]["parts"][-1]
+    assert error["type"] == "error" and "OAuth session expired" in error["text"] and "claude auth login" in error["text"]

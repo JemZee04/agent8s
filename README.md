@@ -185,6 +185,15 @@ Needs no Telegram credentials; it shares the database and the project list with 
 Not done yet: importing Codex sessions (Claude Code sessions are covered, see below), LLM-written
 handoff summaries (the transcript is truncated, not summarised), queuing a message while an agent works.
 
+### Signing in the agents (the background service has its own login)
+
+The service starts `claude` and `codex` without your shell's environment, so it uses the login those tools keep themselves
+(Claude Code: the macOS keychain). That is **not** the session of the desktop Claude app you may be chatting in, and it can
+expire on its own: the symptom is a chat reply "Failed to authenticate: OAuth session expired and could not be refreshed".
+The composer therefore shows a banner when an agent is signed out (checked every 30 s and after a failed turn) with **Sign in…**
+(opens Terminal running `claude auth login` / `codex login`; the browser step is yours) and **Check again**. The same text is
+appended to such errors. On the phone the banner only tells you to sign in on the computer.
+
 ### Install it as an app
 
 ```bash

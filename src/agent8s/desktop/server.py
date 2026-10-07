@@ -16,7 +16,7 @@ from aiohttp import WSMsgType, web
 
 from ..config import DesktopConfig
 from ..db import Database
-from . import ports as portscan, service
+from . import agent_auth, ports as portscan, service
 from .preview import is_web_page, list_html_files
 from .remote import RemoteManager
 from .runner import Busy, Hub, Orchestrator, UserError
@@ -216,6 +216,25 @@ def create_app(config: DesktopConfig, db: Database, orch: Orchestrator, hub: Hub
     @routes.post("/api/chats/{chat_id}/sync")
     async def sync_chat(request: web.Request) -> web.Response:
         return web.json_response(await orch.sync_claude(_chat_id(request)))
+
+    @routes.get("/api/agents/auth")
+    async def agents_auth(request: web.Request) -> web.Response:
+        refresh = request.query.get("refresh") == "1"
+        names = [a["id"] for a in orch.catalog["agents"] if a["id"] in agent_auth.AUTH_COMMANDS]
+        results = await asyncio.gather(*(agent_auth.check_auth(n, refresh) for n in names))
+        return web.json_response(dict(zip(names, results)))
+
+    @routes.post("/api/agents/{agent}/login")
+    async def agent_login(request: web.Request) -> web.Response:
+        agent = request.match_info["agent"]
+        if agent not in agent_auth.LOGIN_COMMANDS:
+            raise UserError("Неизвестный агент.")
+        try:
+            await asyncio.to_thread(agent_auth.open_login_terminal, agent, config.data_dir)
+        except RuntimeError as exc:
+            raise UserError(str(exc))
+        agent_auth.forget_cached(agent)
+        return web.json_response({"ok": True})
 
     @routes.get("/api/import/claude")
     async def claude_sessions(request: web.Request) -> web.Response:
