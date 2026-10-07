@@ -20,7 +20,21 @@
   let menu = $state(false);
 
   function onScroll() {
-    if (scroller) stick = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 90;
+    if (!scroller) return;
+    // Only a real reader can ask to stay at the bottom. A page that is shorter than the window (it just
+    // collapsed while reloading) is "at the bottom" trivially and must not count.
+    if (scroller.scrollHeight - scroller.clientHeight <= 1) return;
+    stick = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 90;
+  }
+
+  // Older messages are inserted above what is being read; Safari does not keep the position by itself.
+  async function showEarlier() {
+    if (!chat || !scroller) return;
+    const height = scroller.scrollHeight;
+    const top = scroller.scrollTop;
+    await loadEarlier(chat.id);
+    await tick();
+    scroller.scrollTop = top + (scroller.scrollHeight - height);
   }
 
   onMount(() => {
@@ -32,8 +46,11 @@
     return () => observer.disconnect();
   });
 
+  // The chat object is replaced whenever its data refreshes; only a different chat should scroll to the end.
+  const chatId = $derived(chat?.id);
+
   $effect(() => {
-    chat?.id;
+    chatId;
     stick = true;
     void tick().then(() => scroller && (scroller.scrollTop = scroller.scrollHeight));
   });
@@ -140,7 +157,7 @@
           </div>
         {/if}
         {#if chat && app.hasMore[chat.id]}
-          <button class="earlier" onclick={() => loadEarlier(chat.id)}>Показать более ранние сообщения</button>
+          <button class="earlier" onclick={showEarlier}>Показать более ранние сообщения</button>
         {/if}
         {#each messages ?? [] as m (m.id)}
           <MessageView message={m} />

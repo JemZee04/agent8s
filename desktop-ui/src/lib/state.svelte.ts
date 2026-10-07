@@ -102,8 +102,16 @@ export async function loadChat(id: number) {
     // A page, not the whole history: imported sessions can hold thousands of messages.
     const data = await api.get<{ chat: Chat; messages: Message[]; has_more: boolean }>(`/api/chats/${id}?limit=${PAGE}`);
     upsertChat(data.chat);
-    app.messages[id] = data.messages;
-    app.hasMore[id] = data.has_more;
+    const loaded = app.messages[id];
+    const firstFresh = data.messages[0]?.id;
+    if (loaded?.length && firstFresh !== undefined && loaded[0].id < firstFresh) {
+      // Earlier pages the reader already pulled in stay: dropping them would yank the text out from
+      // under whoever is reading it. The newest page replaces its older copy (statuses may have changed).
+      app.messages[id] = [...loaded.filter((m) => m.id < firstFresh), ...data.messages];
+    } else {
+      app.messages[id] = data.messages;
+      app.hasMore[id] = data.has_more;
+    }
   } catch (e) {
     fail(e);
   } finally {
@@ -277,7 +285,9 @@ let transport: RelayTransport | null = null;
 
 // (Re)synchronise: anything may have happened while we were away.
 function resync() {
-  for (const id of Object.keys(app.messages)) delete app.messages[Number(id)];
+  // Other chats reload when opened. The one on screen is refreshed *in place*: emptying it first would
+  // collapse the page, and whoever is reading a long chat would be thrown to its bottom.
+  for (const id of Object.keys(app.messages)) if (Number(id) !== app.selectedId) delete app.messages[Number(id)];
   void bootstrap().catch(fail);
 }
 
