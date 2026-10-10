@@ -255,3 +255,23 @@ async def test_a_sign_in_failure_tells_you_how_to_fix_it(env):
     await settle(orch, chat["id"])
     error = orch.get_chat_with_messages(chat["id"])["messages"][-1]["parts"][-1]
     assert error["type"] == "error" and "OAuth session expired" in error["text"] and "claude auth login" in error["text"]
+
+
+async def test_a_chat_can_be_created_in_a_folder_that_is_not_a_git_repository(env, tmp_path):
+    """Regression (reported by the user): "Direct" on an imported notes folder crashed with an internal error."""
+    orch, store, project, _ = env
+    plain = tmp_path / "notes"
+    plain.mkdir()
+    folder = orch._db.add_project("notes", str(plain), "")  # how plain folders are registered by import
+    chat = await orch.create_chat(folder.id, "claude", mode="direct")
+    assert chat["branch"] == "" and chat["worktree_path"] == str(plain) and chat["mode"] == "direct"
+
+
+async def test_a_separate_branch_is_refused_politely_for_a_plain_folder(env, tmp_path):
+    orch, store, project, _ = env
+    plain = tmp_path / "notes"
+    plain.mkdir()
+    folder = orch._db.add_project("notes", str(plain), "")
+    with pytest.raises(UserError, match="не git-репозиторий"):
+        await orch.create_chat(folder.id, "claude", mode="worktree")
+    assert store.list_chats() == []  # nothing half-created

@@ -1,10 +1,11 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api, native } from './lib/api';
-  import { addProject, app, createChat } from './lib/state.svelte';
+  import { addProject, app, createChat, selectedChat } from './lib/state.svelte';
   import AgentPicker from './AgentPicker.svelte';
 
-  let projectId = $state<number | null>(app.newChatProject ?? app.projects[0]?.id ?? null);
+  // Default to the project you are already working in, not the first one alphabetically.
+  let projectId = $state<number | null>(app.newChatProject ?? selectedChat()?.project_id ?? app.projects[0]?.id ?? null);
   let agent = $state(app.agents[0]?.id ?? 'claude');
   let model = $state('');
   let effort = $state('');
@@ -18,6 +19,12 @@
     try {
       discovered = (await api.get<{ repos: { name: string; path: string }[] }>('/api/discover')).repos;
     } catch { /* optional convenience */ }
+  });
+
+  // Folders that are not git repositories (imported notes, study material) cannot get a separate branch.
+  const isGit = $derived(!!app.projects.find((p) => p.id === projectId)?.default_branch);
+  $effect(() => {
+    if (!isGit && mode === 'worktree') mode = 'direct';
   });
 
   const basename = (p: string) => p.replace(/\/+$/, '').split('/').pop() || p;
@@ -94,8 +101,8 @@
 
     <div class="field">
       <span class="label">Где работает агент</span>
-      <label class="radio"><input type="radio" bind:group={mode} value="worktree" />
-        <span><b>Отдельная ветка</b> (рекомендуется) — изолированная копия проекта; изменения не затрагивают вашу рабочую папку, пока вы не нажмёте «Влить».</span></label>
+      <label class="radio" class:off={!isGit}><input type="radio" bind:group={mode} value="worktree" disabled={!isGit} />
+        <span><b>Отдельная ветка</b> (рекомендуется) — изолированная копия проекта; изменения не затрагивают вашу рабочую папку, пока вы не нажмёте «Влить».{#if !isGit} <b>Недоступно: эта папка не под git.</b>{/if}</span></label>
       <label class="radio"><input type="radio" bind:group={mode} value="direct" />
         <span><b>Прямо в проекте</b> — агент правит ваши файлы на текущей ветке сразу.</span></label>
     </div>
@@ -119,6 +126,7 @@
   .chip { background: var(--accent-soft); color: var(--accent); border: 0; border-radius: 14px; padding: 3px 11px; }
   .chip:hover { filter: brightness(1.15); }
   .radio { display: flex; gap: 9px; align-items: flex-start; padding: 6px 0; line-height: 1.4; }
+  .radio.off { opacity: 0.55; }
   .radio input { margin-top: 3px; }
   .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
   select { min-width: 200px; }

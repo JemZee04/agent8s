@@ -165,3 +165,15 @@ async def test_pairing_endpoints(ctx):
     assert (await client.delete("/api/remote", headers=auth())).status == 200
     assert (await (await client.get("/api/remote", headers=auth())).json())["configured"] is False
     assert (await client.get("/api/remote", headers={})).status == 401  # still behind the token
+
+
+async def test_git_refusals_are_shown_to_the_user_not_reported_as_a_crash(ctx, tmp_path):
+    client, orch, repo, _ = ctx
+    plain = tmp_path / "plain-folder"
+    plain.mkdir()
+    folder = orch._db.add_project("plain", str(plain), "")
+    chat = orch._store.create_chat(folder.id, "plain chat", "direct", "", str(plain), "claude")
+    response = await client.post(f"/api/chats/{chat.id}/commit", json={"message": "x"}, headers=auth())
+    body = await response.json()
+    assert response.status == 400  # not 500 "internal error"
+    assert "not a git repository" in body["error"]

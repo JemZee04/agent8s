@@ -355,9 +355,17 @@ class Orchestrator:
 
         project_path = Path(project.path)
         if mode == "direct":
-            branch = await asyncio.to_thread(git_ops.current_branch, project_path)
+            try:
+                branch = await asyncio.to_thread(git_ops.current_branch, project_path)
+            except git_ops.GitError:
+                branch = ""  # a plain folder (notes, study material): works in place, just without git tools
             chat = self._store.create_chat(project_id, DEFAULT_TITLE, mode, branch, str(project_path), agent, model, effort)
         else:
+            if not project.default_branch:
+                raise UserError(
+                    f"«{project.name}» — не git-репозиторий, отдельную ветку для неё создать нельзя. "
+                    "Выберите режим «Прямо в проекте»."
+                )
             chat = self._store.create_chat(project_id, DEFAULT_TITLE, mode, "", "", agent, model, effort)
             branch = f"agent8s/chat-{chat.id}"
             worktree = self._config.worktree_dir / project.name / f"chat-{chat.id}"

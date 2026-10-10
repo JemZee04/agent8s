@@ -16,6 +16,7 @@ from aiohttp import WSMsgType, web
 
 from ..config import DesktopConfig
 from ..db import Database
+from ..git_ops import GitError
 from . import agent_auth, ports as portscan, service
 from .preview import is_web_page, list_html_files
 from .remote import RemoteManager
@@ -80,6 +81,9 @@ async def errors(request: web.Request, handler: Handler) -> web.StreamResponse:
         return web.json_response({"error": str(exc)}, status=400)
     except Busy:
         return web.json_response({"error": "Агент ещё работает в этом чате — дождись ответа или нажми «Стоп»."}, status=409)
+    except GitError as exc:
+        # git refusing something (not a repository, a conflict, a lock) is a message for the user, not a crash
+        return web.json_response({"error": str(exc).strip()[:600]}, status=400)
     except web.HTTPException:
         raise
     except Exception:
